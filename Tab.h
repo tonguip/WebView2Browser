@@ -9,10 +9,18 @@
 class Tab
 {
 public:
+    // A window a page asked for, which opens in a new tab (see
+    // BrowserWindow::HandleTabNewWindowRequested).
+    struct NewWindow
+    {
+        Microsoft::WRL::ComPtr<ICoreWebView2NewWindowRequestedEventArgs> args;
+        Microsoft::WRL::ComPtr<ICoreWebView2Deferral> deferral;
+    };
+
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> m_contentController;
     Microsoft::WRL::ComPtr<ICoreWebView2> m_contentWebView;
 
-    static std::unique_ptr<Tab> CreateNewTab(HWND hWnd, ICoreWebView2Environment* env, size_t id, bool shouldBeActive);
+    static std::unique_ptr<Tab> CreateNewTab(HWND hWnd, ICoreWebView2Environment* env, size_t id, bool shouldBeActive, NewWindow newWindow = {});
     ~Tab();
     HRESULT ResizeWebView();
     HRESULT SetVisible(bool visible);
@@ -59,10 +67,12 @@ protected:
     EventRegistrationToken m_navCompletedToken = {};
     EventRegistrationToken m_certificateErrorToken = {};
     EventRegistrationToken m_processFailedToken = {};
+    EventRegistrationToken m_newWindowToken = {};
+    EventRegistrationToken m_windowCloseToken = {};
     EventRegistrationToken m_messageBrokerToken = {};  // Message broker for browser pages loaded in a tab
     Microsoft::WRL::ComPtr<ICoreWebView2WebMessageReceivedEventHandler> m_messageBroker;
 
-    HRESULT Init(ICoreWebView2Environment* env, bool shouldBeActive);
+    HRESULT Init(ICoreWebView2Environment* env, bool shouldBeActive, NewWindow newWindow);
     void SetMessageBroker();
     void SetTrackingPrevention();
     void OnRendererExited();

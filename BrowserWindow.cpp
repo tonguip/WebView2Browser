@@ -465,7 +465,15 @@ void BrowserWindow::SetUIMessageBroker()
         {
             size_t id = args.at(L"tabId").as_number().to_uint32();
             bool shouldBeActive = args.at(L"active").as_bool();
-            std::unique_ptr<Tab> newTab = Tab::CreateNewTab(m_hWnd, m_env.Get(), id, shouldBeActive);
+            // A tab the toolbar adds for a window a page asked for is for the
+            // oldest one, as the toolbar adds them in turn.
+            Tab::NewWindow newWindow;
+            if (args.at(L"newWindow").as_bool() && !m_newWindows.empty())
+            {
+                newWindow = m_newWindows.front();
+                m_newWindows.pop_front();
+            }
+            std::unique_ptr<Tab> newTab = Tab::CreateNewTab(m_hWnd, m_env.Get(), id, shouldBeActive, newWindow);
 
             std::map<size_t, std::unique_ptr<Tab>>::iterator it = m_tabs.find(id);
             if (it == m_tabs.end())
@@ -614,12 +622,7 @@ HRESULT BrowserWindow::SwitchToTab(size_t tabId)
         {
             auto hr = m_tabs.at(previousActiveTab)->SetVisible(false);
             if (hr == HRESULT_FROM_WIN32(ERROR_INVALID_STATE)) {
-                web::json::value jsonObj = web::json::value::parse(L"{}");
-                jsonObj[L"message"] = web::json::value(MG_CLOSE_TAB);
-                jsonObj[L"args"] = web::json::value::parse(L"{}");
-                jsonObj[L"args"][L"tabId"] = web::json::value::number(previousActiveTab);
-
-                PostJsonToWebView(jsonObj, m_controlsWebView.Get());
+                HandleTabCloseRequested(previousActiveTab);
             }
             RETURN_IF_FAILED(hr);
         }
@@ -888,11 +891,64 @@ std::wstring BrowserWindow::GetHost(LPCWSTR uri, DWORD* scheme)
     return host;
 }
 
+// A page asked for a new window: a link that opens in one (target="_blank",
+// Shift- or Ctrl-click), window.open() or "Open link in new window". WebView2
+// would open a window of its own, outside the tab strip, that is never
+// trimmed or suspended. The page opens in a new tab instead, which the
+// toolbar adds: in front, or behind for a Ctrl-click, as in Edge.
+HRESULT BrowserWindow::HandleTabNewWindowRequested(size_t tabId, ICoreWebView2NewWindowRequestedEventArgs* args)
+{
+    // Unless a tab is set as the window, window.open() gets null.
+    RETURN_IF_FAILED(args->put_Handled(TRUE));
+
+    // Edge's popup blocker is off in WebView2. A window the user didn't ask
+    // for, e.g. one a page opens as it loads or from a timer, is blocked, as
+    // the settings page says.
+    BOOL userInitiated = FALSE;
+    RETURN_IF_FAILED(args->get_IsUserInitiated(&userInitiated));
+    if (!userInitiated)
+    {
+        return S_OK;
+    }
+
+    Tab::NewWindow newWindow = { args };
+    RETURN_IF_FAILED(args->GetDeferral(&newWindow.deferral));
+    m_newWindows.push_back(newWindow);
+
+    bool behind = GetAsyncKeyState(VK_CONTROL) < 0 && GetAsyncKeyState(VK_SHIFT) >= 0;
+    web::json::value jsonObj = web::json::value::parse(L"{}");
+    jsonObj[L"message"] = web::json::value(MG_CREATE_TAB);
+    jsonObj[L"args"] = web::json::value::parse(L"{}");
+    jsonObj[L"args"][L"active"] = web::json::value::boolean(!behind);
+    jsonObj[L"args"][L"openerTabId"] = web::json::value::number(tabId);
+
+    return PostJsonToWebView(jsonObj, m_controlsWebView.Get());
+}
+
+// The toolbar closes the tab, as if the user had, and the host then closes it
+// (see MG_CLOSE_TAB).
+HRESULT BrowserWindow::HandleTabCloseRequested(size_t tabId)
+{
+    web::json::value jsonObj = web::json::value::parse(L"{}");
+    jsonObj[L"message"] = web::json::value(MG_CLOSE_TAB);
+    jsonObj[L"args"] = web::json::value::parse(L"{}");
+    jsonObj[L"args"][L"tabId"] = web::json::value::number(tabId);
+
+    return PostJsonToWebView(jsonObj, m_controlsWebView.Get());
+}
+
 void BrowserWindow::HandleTabCreated(size_t tabId, bool shouldBeActive)
 {
     if (shouldBeActive)
     {
         CheckFailure(SwitchToTab(tabId), L"");
+    }
+    else
+    {
+        // A tab opened behind lays its page out at the size it will show at,
+        // and is hidden as other tabs behind are.
+        CheckFailure(m_tabs.at(tabId)->ResizeWebView(), L"");
+        CheckFailure(m_tabs.at(tabId)->SetVisible(false), L"");
     }
 }
 

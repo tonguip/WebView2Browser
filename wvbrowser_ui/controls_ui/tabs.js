@@ -11,14 +11,17 @@ function isValidTabId(tabId) {
     return tabId != INVALID_TAB_ID && tabs.has(tabId);
 }
 
-function createNewTab(shouldBeActive) {
+// openerTabId is given for a window a page in that tab asked for, which
+// opens in the new tab
+function createNewTab(shouldBeActive, openerTabId) {
     const tabId = getNewTabId();
 
     var message = {
         message: commands.MG_CREATE_TAB,
         args: {
             tabId: parseInt(tabId),
-            active: shouldBeActive || false
+            active: shouldBeActive || false,
+            newWindow: openerTabId !== undefined
         }
     };
 
@@ -34,7 +37,8 @@ function createNewTab(shouldBeActive) {
         canGoBack: false,
         canGoForward: false,
         securityState: 'unknown',
-        historyItemId: INVALID_HISTORY_ID
+        historyItemId: INVALID_HISTORY_ID,
+        openerTabId: openerTabId || INVALID_TAB_ID
     });
 
     loadTabUI(tabId);
@@ -106,13 +110,20 @@ function closeTab(id) {
             return;
         }
 
-        // Other tabs are open, switch to rightmost tab
-        var tabsEntries = Array.from(tabs.entries());
-        var lastEntry = tabsEntries.pop();
-        if (lastEntry[0] == id) {
-            lastEntry = tabsEntries.pop();
+        // A tab a page opened goes back to that page, as closing its window
+        // would
+        const openerTabId = tabs.get(id).openerTabId;
+        if (isValidTabId(openerTabId)) {
+            switchToTab(openerTabId, true);
+        } else {
+            // Other tabs are open, switch to rightmost tab
+            var tabsEntries = Array.from(tabs.entries());
+            var lastEntry = tabsEntries.pop();
+            if (lastEntry[0] == id) {
+                lastEntry = tabsEntries.pop();
+            }
+            switchToTab(lastEntry[0], true);
         }
-        switchToTab(lastEntry[0], true);
     }
 
     // Remove tab element

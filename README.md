@@ -98,6 +98,7 @@ WebView2Browser provides all the functionalities to make a basic web browser, bu
 * Reload page
 * Cancel navigation
 * Multiple tabs
+* Opening new windows as tabs, blocking popups
 * History
 * Favorites
 * Search from the address bar
@@ -117,6 +118,7 @@ ICoreWebView2ServerCertificateErrorDetectedEventHandler | Used along with add_Se
 ICoreWebView2ExecuteScriptCompletedHandler | Used along with ExecuteScript to get the title and favicon from the visited page. |
 ICoreWebView2FocusChangedEventHandler | Used along with add_LostFocus to hide the browser options dropdown when it loses focus.
 ICoreWebView2HistoryChangedEventHandler | Used along with add_HistoryChanged to update the navigation buttons in the browser UI. |
+ICoreWebView2NewWindowRequestedEventArgs | Used with put_NewWindow and GetDeferral to open the window a page asks for in a new tab, and with get_IsUserInitiated to block popups the user didn't ask for. |
 ICoreWebView2Controller | There are several WebViewControllers in WebView2Browser and we fetch the associated WebViews from them.
 ICoreWebView2NavigationCompletedEventHandler | Used along with add_NavigationCompleted to update the reload button in the browser UI.
 ICoreWebView2Settings | Used to disable DevTools in the browser UI.
@@ -137,6 +139,8 @@ add_ServerCertificateErrorDetected | Used to show pages of a host with a certifi
 put_MemoryUsageTargetLevel | Used to keep the memory of hidden tabs and the hidden options dropdown low.
 TrySuspend | Used to suspend tabs that have been hidden for five minutes.
 add_ProcessFailed | Used to load a tab's page again when its renderer process ends.
+add_NewWindowRequested | Used to open the windows pages ask for in new tabs.
+add_WindowCloseRequested | Used to close a tab when its page closes its window.
 get_Profile | Used with ICoreWebView2Profile3::put_PreferredTrackingPreventionLevel to block most trackers in tabs, and with ICoreWebView2Profile2::ClearBrowsingData to clear the cache and cookies.
 
 ICoreWebView2Controller API | Feature(s)
@@ -156,6 +160,7 @@ The sections below describe how some of the features in WebView2Browser were imp
 * [Some interesting features](#some-interesting-features)
   * [Communicating the WebViews](#communicating-the-webviews)
   * [Tab handling](#tab-handling)
+  * [Opening new windows as tabs](#opening-new-windows-as-tabs)
   * [Keeping hidden tabs light](#keeping-hidden-tabs-light)
   * [Blocking trackers](#blocking-trackers)
   * [Sharing renderer processes](#sharing-renderer-processes)
@@ -680,6 +685,42 @@ HRESULT BrowserWindow::SwitchToTab(size_t tabId)
     }
 
     return S_OK;
+}
+```
+
+### Opening new windows as tabs
+
+A page asks for a new window with a link that opens in one (`target="_blank"`, a Shift- or Ctrl-click), with `window.open()`, or through "Open link in new window" in its context menu. Left to itself, WebView2 opens a window of its own for it, outside the tab strip and never hidden, so it is never trimmed or suspended and its memory escapes [Keeping hidden tabs light](#keeping-hidden-tabs-light). Instead, the tab handles [NewWindowRequested](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2#add_newwindowrequested): `BrowserWindow::HandleTabNewWindowRequested` takes a deferral, keeps the request and posts `MG_CREATE_TAB` to the controls WebView, which adds a tab as the new tab button does and posts `MG_CREATE_TAB` back. The new tab's WebView is then given to the request with [put_NewWindow](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2newwindowrequestedeventargs#put_newwindow), in place of the new tab page, and the deferral completes.
+
+So the page loads in a tab, and `window.open()` gives the page that asked that tab's window, to script and to message as it would a window. A page that closes its window, as sign-in pages do once the user is in, raises `WindowCloseRequested`: its tab closes, and the tab that opened it comes back to the front. The tab opens in front, or behind for a Ctrl-click, as in Edge, and a tab behind is hidden at once like any other. Edge's popup blocker is off in WebView2, so a window the user didn't ask for, one a page opens as it loads or from a timer, is blocked: `window.open()` gets `null`, as the settings page says.
+
+Three Wikipedia articles opened with `window.open()` from a page, then back to that page: as windows, 212-233 MB private working set; as tabs, 131-140 MB, and one window rather than four. The pages stay loaded either way, so committed memory is the same, about 360 MB, until the tabs sleep.
+
+```cpp
+HRESULT BrowserWindow::HandleTabNewWindowRequested(size_t tabId, ICoreWebView2NewWindowRequestedEventArgs* args)
+{
+    // Unless a tab is set as the window, window.open() gets null.
+    RETURN_IF_FAILED(args->put_Handled(TRUE));
+
+    BOOL userInitiated = FALSE;
+    RETURN_IF_FAILED(args->get_IsUserInitiated(&userInitiated));
+    if (!userInitiated)
+    {
+        return S_OK;
+    }
+
+    Tab::NewWindow newWindow = { args };
+    RETURN_IF_FAILED(args->GetDeferral(&newWindow.deferral));
+    m_newWindows.push_back(newWindow);
+
+    bool behind = GetAsyncKeyState(VK_CONTROL) < 0 && GetAsyncKeyState(VK_SHIFT) >= 0;
+    web::json::value jsonObj = web::json::value::parse(L"{}");
+    jsonObj[L"message"] = web::json::value(MG_CREATE_TAB);
+    jsonObj[L"args"] = web::json::value::parse(L"{}");
+    jsonObj[L"args"][L"active"] = web::json::value::boolean(!behind);
+    jsonObj[L"args"][L"openerTabId"] = web::json::value::number(tabId);
+
+    return PostJsonToWebView(jsonObj, m_controlsWebView.Get());
 }
 ```
 

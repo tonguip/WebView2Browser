@@ -126,6 +126,10 @@ const messageHandler = event => {
         case commands.MG_CLOSE_WINDOW:
             closeWindow();
             break;
+        case commands.MG_CREATE_TAB:
+            // A page asked for a new window
+            createNewTab(args.active, args.openerTabId);
+            break;
         case commands.MG_CLOSE_TAB:
             if (isValidTabId(args.tabId)) {
                 closeTab(args.tabId);

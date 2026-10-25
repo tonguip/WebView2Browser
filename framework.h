@@ -20,6 +20,7 @@
 #include <memory>
 #include <stdlib.h>
 #include <tchar.h>
+#include <deque>
 #include <map>
 #include <set>
 

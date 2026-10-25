@@ -7,22 +7,32 @@
 
 using namespace Microsoft::WRL;
 
-std::unique_ptr<Tab> Tab::CreateNewTab(HWND hWnd, ICoreWebView2Environment* env, size_t id, bool shouldBeActive)
+std::unique_ptr<Tab> Tab::CreateNewTab(HWND hWnd, ICoreWebView2Environment* env, size_t id, bool shouldBeActive, NewWindow newWindow)
 {
     std::unique_ptr<Tab> tab = std::make_unique<Tab>();
 
     tab->m_parentHWnd = hWnd;
     tab->m_tabId = id;
     tab->SetMessageBroker();
-    tab->Init(env, shouldBeActive);
+    tab->Init(env, shouldBeActive, newWindow);
 
     return tab;
 }
 
-HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive)
+HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive, NewWindow newWindow)
 {
     return env->CreateCoreWebView2Controller(m_parentHWnd, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-        [this, shouldBeActive](HRESULT result, ICoreWebView2Controller* host) -> HRESULT {
+        [this, shouldBeActive, newWindow](HRESULT result, ICoreWebView2Controller* host) -> HRESULT {
+        // The page that asked for the window waits for this tab's WebView. If
+        // the tab isn't set as the window, its window.open() gets null.
+        auto completeNewWindow = wil::scope_exit([&newWindow]
+        {
+            if (newWindow.deferral)
+            {
+                newWindow.deferral->Complete();
+            }
+        });
+
         if (!SUCCEEDED(result))
         {
             OutputDebugString(L"Tab WebView creation failed\n");
@@ -94,13 +104,39 @@ HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive)
             return S_OK;
         }).Get(), &m_processFailedToken));
 
+        RETURN_IF_FAILED(m_contentWebView->add_NewWindowRequested(Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+            [this, browserWindow](ICoreWebView2* webview, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT
+        {
+            BrowserWindow::CheckFailure(browserWindow->HandleTabNewWindowRequested(m_tabId, args), L"Can't open a new tab");
+            return S_OK;
+        }).Get(), &m_newWindowToken));
+
+        // A page window.open() opened may close itself, e.g. a sign-in page
+        // once the user is in: its tab closes.
+        RETURN_IF_FAILED(m_contentWebView->add_WindowCloseRequested(Callback<ICoreWebView2WindowCloseRequestedEventHandler>(
+            [this, browserWindow](ICoreWebView2* webview, IUnknown* args) -> HRESULT
+        {
+            BrowserWindow::CheckFailure(browserWindow->HandleTabCloseRequested(m_tabId), L"Can't close tab");
+            return S_OK;
+        }).Get(), &m_windowCloseToken));
+
         SetTrackingPrevention();
 
-        // A new tab shows a page of the browser's own, which loads at once
-        // and keeps little memory, until the user says where to go. A web
-        // page there would load, and keep a renderer busy, for nothing.
-        std::wstring newTabPath = browserWindow->GetFullPathFor(L"wvbrowser_ui\\content_ui\\newtab.html");
-        RETURN_IF_FAILED(m_contentWebView->Navigate(newTabPath.c_str()));
+        if (newWindow.args)
+        {
+            // The page loads here, and window.open() gives the page that
+            // asked this tab's window.
+            RETURN_IF_FAILED(newWindow.args->put_NewWindow(m_contentWebView.Get()));
+        }
+        else
+        {
+            // A new tab shows a page of the browser's own, which loads at
+            // once and keeps little memory, until the user says where to go.
+            // A web page there would load, and keep a renderer busy, for
+            // nothing.
+            std::wstring newTabPath = browserWindow->GetFullPathFor(L"wvbrowser_ui\\content_ui\\newtab.html");
+            RETURN_IF_FAILED(m_contentWebView->Navigate(newTabPath.c_str()));
+        }
         browserWindow->HandleTabCreated(m_tabId, shouldBeActive);
 
         return S_OK;

@@ -27,6 +27,8 @@ public:
     HRESULT HandleTabNavCompleted(size_t tabId, ICoreWebView2* webview, ICoreWebView2NavigationCompletedEventArgs* args);
     HRESULT HandleTabSecurityUpdate(size_t tabId, ICoreWebView2* webview);
     HRESULT HandleTabCertificateError(size_t tabId, ICoreWebView2* webview, LPCWSTR uri);
+    HRESULT HandleTabNewWindowRequested(size_t tabId, ICoreWebView2NewWindowRequestedEventArgs* args);
+    HRESULT HandleTabCloseRequested(size_t tabId);
     void HandleTabCreated(size_t tabId, bool shouldBeActive);
     HRESULT HandleTabMessageReceived(size_t tabId, ICoreWebView2* webview, ICoreWebView2WebMessageReceivedEventArgs* eventArgs);
     int GetDPIAwareBound(int bound);
@@ -61,6 +63,9 @@ protected:
     bool m_minimized = false;
     // Hosts a tab met a certificate error on, see HandleTabSecurityUpdate.
     std::set<std::wstring> m_certificateErrorHosts;
+    // Windows pages asked for, oldest first, until the toolbar adds their
+    // tabs (see HandleTabNewWindowRequested).
+    std::deque<Tab::NewWindow> m_newWindows;
 
     EventRegistrationToken m_controlsUIMessageBrokerToken = {};  // Token for the UI message handler in controls WebView
     EventRegistrationToken m_controlsZoomToken = {};
