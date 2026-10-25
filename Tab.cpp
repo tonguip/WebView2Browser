@@ -213,7 +213,8 @@ HRESULT Tab::SetVisible(bool visible)
     if (visible)
     {
         KillTimer(m_parentHWnd, m_tabId);
-        // WebView2 resumes a suspended tab as it shows.
+        // WebView2 resumes a suspended tab as it shows, which sets the level
+        // back to NORMAL; a tab that is only low is set back here.
         if (IsTrimmed())
         {
             BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
@@ -244,7 +245,8 @@ void Tab::Wake()
         return;
     }
 
-    // Also for a TrySuspend still under way.
+    // Also for a TrySuspend still under way. Resuming a suspended tab sets the
+    // level back to NORMAL; a tab that is only low is set back here.
     ComPtr<ICoreWebView2_3> webview3;
     if (SUCCEEDED(m_contentWebView.As(&webview3)))
     {
@@ -294,6 +296,12 @@ void Tab::OnHiddenTimer()
     }
     else if (*m_memory == Memory::Settled)
     {
+        // WebView2's documentation advises using TrySuspend and Resume or the
+        // memory level, not both. A tab uses the level only while it isn't
+        // suspended, when WebView2 would ignore it: TrySuspend sets LOW
+        // itself, and showing or resuming the tab sets NORMAL at once. Each
+        // alone keeps more: with LOW only, the pages run on and take memory
+        // back; suspended only, a tab keeps all of it for five minutes.
         ComPtr<ICoreWebView2_3> webview3;
         if (FAILED(m_contentWebView.As(&webview3)))
         {

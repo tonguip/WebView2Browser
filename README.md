@@ -739,7 +739,8 @@ HRESULT Tab::SetVisible(bool visible)
     if (visible)
     {
         KillTimer(m_parentHWnd, m_tabId);
-        // WebView2 resumes a suspended tab as it shows.
+        // WebView2 resumes a suspended tab as it shows, which sets the level
+        // back to NORMAL; a tab that is only low is set back here.
         if (IsTrimmed())
         {
             BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
@@ -762,6 +763,14 @@ HRESULT Tab::SetVisible(bool visible)
 ```
 
 Waking a sleeping tab takes a moment, so it starts before the click: when the pointer enters a tab in the strip, the controls WebView posts `MG_WAKE_TAB`, and `Tab::Wake` resumes the tab and gives it its memory back. If it isn't clicked, it is trimmed again 10 seconds later.
+
+WebView2's documentation advises using either `TrySuspend` and `Resume` or `MemoryUsageTargetLevel`, not both. A hidden tab uses both, one after the other, and never sets the level while it is suspended, when WebView2 would ignore it: `TrySuspend` sets `LOW` itself, WebView2 sets `NORMAL` again as soon as a suspended tab shows or is resumed, and `SetVisible` and `Wake` set it back for a tab that is only low. On WebView2 155 and 156, all 34 suspends from `LOW` succeeded, and every tab came back at `NORMAL`, drawing and running its timers at full rate, even when shown just as it was being suspended. Each API alone keeps more. With eight sites hidden, 1, 4 and 7 minutes after the last tab switch (one run on each runtime):
+
+- Both: 532-555, 802-830 and 377-378 MB private working set.
+- `LOW` only: 509-547, 774-779 and 787-789 MB. The pages run on and take memory back, and used 0.9-1.3 s of renderer CPU in the last two minutes, against 0.1 s.
+- `TrySuspend` only: 1,132-1,166, 1,075-1,122 and 320-402 MB.
+
+Committed memory is about the same in all three, 1.46-1.57 GB, as hidden pages are paged out rather than freed. A suspended tab draws its first two frames a median 80-119 ms after it is shown, a low one 61-62 ms.
 
 The options dropdown, hidden most of the time, keeps its memory low while it is hidden too.
 
