@@ -28,16 +28,44 @@ function handleUpgradeEvent(event) {
     });
 }
 
+// The database stays open for the queries that follow. Each query used to
+// open it, several times per page loaded, and none closed it: each left a
+// connection open in the storage service until garbage collection.
+let openDB = null;
+let queriesWaitingForDB = null;
+
 function queryDB(query) {
+    if (openDB) {
+        query(openDB);
+        return;
+    }
+
+    // Opening already: the query runs once it's open
+    if (queriesWaitingForDB) {
+        queriesWaitingForDB.push(query);
+        return;
+    }
+    queriesWaitingForDB = [query];
+
     let request = window.indexedDB.open('WVBrowser');
 
     request.onerror = function(event) {
         console.log('Failed to open database');
+        queriesWaitingForDB = null;
     };
 
     request.onsuccess = function(event) {
         let db = event.target.result;
-        query(db);
+
+        // Opened again by the next query if the browser closes it
+        db.onclose = function(event) {
+            openDB = null;
+        };
+
+        openDB = db;
+        let queries = queriesWaitingForDB;
+        queriesWaitingForDB = null;
+        queries.map(waitingQuery => waitingQuery(db));
     };
 
     request.onupgradeneeded = handleUpgradeEvent;

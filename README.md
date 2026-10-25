@@ -777,7 +777,7 @@ HRESULT BrowserWindow::HandleTabSecurityUpdate(size_t tabId, ICoreWebView2* webv
 
 ### Populating the history
 
-WebView2Browser uses IndexedDB in the controls WebView to store history items, just an example of how WebView2 enables you to access standard web technologies as you would in the browser. The item for a navigation will be created as soon as the URI is updated. These items are then retrieved by the history UI in a tab making use of `window.chrome.postMessage`.
+WebView2Browser uses IndexedDB in the controls WebView to store history items, just an example of how WebView2 enables you to access standard web technologies as you would in the browser. The item for a navigation will be created as soon as the URI is updated. These items are then retrieved by the history UI in a tab making use of `window.chrome.postMessage`. `queryDB` opens the database once and keeps the connection for the queries that follow, several for each page loaded.
 
 In this case, most functionality is implemented using JavaScript on both ends (controls WebView and content WebView loading the UI) so the host application is only acting as a message broker to communicate those ends.
 
