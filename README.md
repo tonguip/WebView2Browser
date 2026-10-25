@@ -113,8 +113,7 @@ API | Feature(s)
 CreateCoreWebView2EnvironmentWithOptions | Used to create the one environment for UI and content WebViews, asking for the high performance GPU when a discrete one is installed. |
 ICoreWebView2ControllerOptions | Used with CreateCoreWebView2ControllerWithOptions to put the UI WebViews in a profile of their own, isolated from web content. |
 ICoreWebView2 | There are several WebViews in WebView2Browser and most features make use of members in this interface, the table below shows how they're used.
-ICoreWebView2DevToolsProtocolEventReceivedEventHandler | Used along with add_DevToolsProtocolEventReceived to listen for CDP security events to update the lock icon in the browser UI. |
-ICoreWebView2DevToolsProtocolEventReceiver | Used along with add_DevToolsProtocolEventReceived to listen for CDP security events to update the lock icon in the browser UI. |
+ICoreWebView2ServerCertificateErrorDetectedEventHandler | Used along with add_ServerCertificateErrorDetected to show pages of a host with a certificate error as not secure. |
 ICoreWebView2ExecuteScriptCompletedHandler | Used along with ExecuteScript to get the title and favicon from the visited page. |
 ICoreWebView2FocusChangedEventHandler | Used along with add_LostFocus to hide the browser options dropdown when it loses focus.
 ICoreWebView2HistoryChangedEventHandler | Used along with add_HistoryChanged to update the navigation buttons in the browser UI. |
@@ -133,10 +132,11 @@ add_NavigationCompleted | Used to display the reload button once a navigation co
 ExecuteScript | Used to get the title and favicon of a visited page.
 PostWebMessageAsJson | Used to communicate WebViews. All messages use JSON to pass parameters needed.
 add_WebMessageReceived | Used to handle web messages posted to the WebView.
-CallDevToolsProtocolMethod | Used to enable listening for security events, which will notify of security status changes in a document.
+Stop | Used to cancel a navigation.
+add_ServerCertificateErrorDetected | Used to show pages of a host with a certificate error as not secure.
 put_MemoryUsageTargetLevel | Used to keep the memory of hidden tabs and the hidden options dropdown low.
 TrySuspend | Used to suspend tabs that have been hidden for five minutes.
-get_Profile | Used with ICoreWebView2Profile3::put_PreferredTrackingPreventionLevel to block most trackers in tabs.
+get_Profile | Used with ICoreWebView2Profile3::put_PreferredTrackingPreventionLevel to block most trackers in tabs, and with ICoreWebView2Profile2::ClearBrowsingData to clear the cache and cookies.
 
 ICoreWebView2Controller API | Feature(s)
 :--- | :---
@@ -459,7 +459,7 @@ function reloadActiveTabContent() {
         break;
         case MG_CANCEL:
         {
-            CheckFailure(m_tabs.at(m_activeTabId)->m_contentWebView->CallDevToolsProtocolMethod(L"Page.stopLoading", L"{}", nullptr), L"");
+            CheckFailure(m_tabs.at(m_activeTabId)->m_contentWebView->Stop(), L"");
         }
 ```
 
@@ -728,35 +728,34 @@ Below the limit, every tab keeps its process, so a background tab busy with scri
 
 ### Updating the security icon
 
-We use the [CallDevToolsProtocolMethod](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2#calldevtoolsprotocolmethod) to enable listening for security events. Whenever a `securityStateChanged` event is fired, we will use the new state to update the security icon on the controls WebView.
+The lock in the address bar follows the page's address: WebView2 shows a page over HTTPS once its certificate is valid, or once the user goes on past the warning for a certificate error, which `ServerCertificateErrorDetected` reports. So an HTTPS page is secure unless its host had a certificate error, an HTTP page is not secure, and the browser's own pages are neutral. `HandleTabSecurityUpdate` works this out when a tab's source changes and posts it to the controls WebView.
+
+The browser used to listen for DevTools' `Security.securityStateChanged` instead, through [CallDevToolsProtocolMethod](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2#calldevtoolsprotocolmethod). Runtime 155 never sent that event, so the lock showed "Not secure" on every page, HTTPS too, and every tab kept a DevTools session. No tab uses DevTools now: cancelling a navigation calls `Stop`, and clearing the cache and cookies goes through the profile's `ClearBrowsingData`.
 
 ```cpp
-        // Enable listening for security events to update secure icon
-        RETURN_IF_FAILED(m_contentWebView->CallDevToolsProtocolMethod(L"Security.enable", L"{}", nullptr));
-
-        BrowserWindow::CheckFailure(m_contentWebView->GetDevToolsProtocolEventReceiver(L"Security.securityStateChanged", &m_securityStateChangedReceiver), L"");
-
-        // Forward security status updates to browser
-        RETURN_IF_FAILED(m_securityStateChangedReceiver->add_DevToolsProtocolEventReceived(Callback<ICoreWebView2DevToolsProtocolEventReceivedEventHandler>(
-            [this, browserWindow](ICoreWebView2* webview, ICoreWebView2DevToolsProtocolEventReceivedEventArgs* args) -> HRESULT
-        {
-            BrowserWindow::CheckFailure(browserWindow->HandleTabSecurityUpdate(m_tabId, webview, args), L"Can't update security icon");
-            return S_OK;
-        }).Get(), &m_securityUpdateToken));
-```
-
-```cpp
-HRESULT BrowserWindow::HandleTabSecurityUpdate(size_t tabId, ICoreWebView2* webview, ICoreWebView2DevToolsProtocolEventReceivedEventArgs* args)
+HRESULT BrowserWindow::HandleTabSecurityUpdate(size_t tabId, ICoreWebView2* webview)
 {
-    wil::unique_cotaskmem_string jsonArgs;
-    RETURN_IF_FAILED(args->get_ParameterObjectAsJson(&jsonArgs));
-    web::json::value securityEvent = web::json::value::parse(jsonArgs.get());
+    wil::unique_cotaskmem_string source;
+    RETURN_IF_FAILED(webview->get_Source(&source));
+
+    // The browser's own pages, about:blank and the like.
+    std::wstring state(L"neutral");
+    DWORD scheme = URL_SCHEME_UNKNOWN;
+    std::wstring host = GetHost(source.get(), &scheme);
+    if (scheme == URL_SCHEME_HTTPS)
+    {
+        state = m_certificateErrorHosts.count(host) ? L"insecure-broken" : L"secure";
+    }
+    else if (scheme == URL_SCHEME_HTTP)
+    {
+        state = L"insecure";
+    }
 
     web::json::value jsonObj = web::json::value::parse(L"{}");
     jsonObj[L"message"] = web::json::value(MG_SECURITY_UPDATE);
     jsonObj[L"args"] = web::json::value::parse(L"{}");
     jsonObj[L"args"][L"tabId"] = web::json::value::number(tabId);
-    jsonObj[L"args"][L"state"] = securityEvent.at(L"securityState");
+    jsonObj[L"args"][L"state"] = web::json::value(state);
 
     return PostJsonToWebView(jsonObj, m_controlsWebView.Get());
 }

@@ -47,6 +47,7 @@ HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive)
             [this, browserWindow](ICoreWebView2* webview, ICoreWebView2SourceChangedEventArgs* args) -> HRESULT
         {
             BrowserWindow::CheckFailure(browserWindow->HandleTabURIUpdate(m_tabId, webview), L"Can't update address bar");
+            BrowserWindow::CheckFailure(browserWindow->HandleTabSecurityUpdate(m_tabId, webview), L"Can't update security icon");
 
             return S_OK;
         }).Get(), &m_uriUpdateForwarderToken));
@@ -66,18 +67,20 @@ HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive)
             return S_OK;
         }).Get(), &m_navCompletedToken));
 
-        // Enable listening for security events to update secure icon
-        RETURN_IF_FAILED(m_contentWebView->CallDevToolsProtocolMethod(L"Security.enable", L"{}", nullptr));
-
-        BrowserWindow::CheckFailure(m_contentWebView->GetDevToolsProtocolEventReceiver(L"Security.securityStateChanged", &m_securityStateChangedReceiver), L"");
-
-        // Forward security status updates to browser
-        RETURN_IF_FAILED(m_securityStateChangedReceiver->add_DevToolsProtocolEventReceived(Callback<ICoreWebView2DevToolsProtocolEventReceivedEventHandler>(
-            [this, browserWindow](ICoreWebView2* webview, ICoreWebView2DevToolsProtocolEventReceivedEventArgs* args) -> HRESULT
+        // A certificate error shows the host's pages as not secure, also once
+        // the user goes on past the warning. Older runtimes don't say.
+        ComPtr<ICoreWebView2_14> webview14;
+        if (SUCCEEDED(m_contentWebView.As(&webview14)))
         {
-            BrowserWindow::CheckFailure(browserWindow->HandleTabSecurityUpdate(m_tabId, webview, args), L"Can't udpate security icon");
-            return S_OK;
-        }).Get(), &m_securityUpdateToken));
+            RETURN_IF_FAILED(webview14->add_ServerCertificateErrorDetected(Callback<ICoreWebView2ServerCertificateErrorDetectedEventHandler>(
+                [this, browserWindow](ICoreWebView2* webview, ICoreWebView2ServerCertificateErrorDetectedEventArgs* args) -> HRESULT
+            {
+                wil::unique_cotaskmem_string uri;
+                RETURN_IF_FAILED(args->get_RequestUri(&uri));
+                BrowserWindow::CheckFailure(browserWindow->HandleTabCertificateError(m_tabId, webview, uri.get()), L"Can't update security icon");
+                return S_OK;
+            }).Get(), &m_certificateErrorToken));
+        }
 
         SetTrackingPrevention();
 

@@ -25,7 +25,8 @@ public:
     HRESULT HandleTabHistoryUpdate(size_t tabId, ICoreWebView2* webview);
     HRESULT HandleTabNavStarting(size_t tabId, ICoreWebView2* webview);
     HRESULT HandleTabNavCompleted(size_t tabId, ICoreWebView2* webview, ICoreWebView2NavigationCompletedEventArgs* args);
-    HRESULT HandleTabSecurityUpdate(size_t tabId, ICoreWebView2* webview, ICoreWebView2DevToolsProtocolEventReceivedEventArgs* args);
+    HRESULT HandleTabSecurityUpdate(size_t tabId, ICoreWebView2* webview);
+    HRESULT HandleTabCertificateError(size_t tabId, ICoreWebView2* webview, LPCWSTR uri);
     void HandleTabCreated(size_t tabId, bool shouldBeActive);
     HRESULT HandleTabMessageReceived(size_t tabId, ICoreWebView2* webview, ICoreWebView2WebMessageReceivedEventArgs* eventArgs);
     int GetDPIAwareBound(int bound);
@@ -58,6 +59,8 @@ protected:
     std::map<size_t,std::unique_ptr<Tab>> m_tabs;
     size_t m_activeTabId = 0;
     bool m_minimized = false;
+    // Hosts a tab met a certificate error on, see HandleTabSecurityUpdate.
+    std::set<std::wstring> m_certificateErrorHosts;
 
     EventRegistrationToken m_controlsUIMessageBrokerToken = {};  // Token for the UI message handler in controls WebView
     EventRegistrationToken m_controlsZoomToken = {};
@@ -78,6 +81,8 @@ protected:
     HRESULT ClearControlsCache();
     HRESULT ClearContentCookies();
     HRESULT ClearControlsCookies();
+    static HRESULT ClearBrowsingData(ICoreWebView2* webview, COREWEBVIEW2_BROWSING_DATA_KINDS dataKinds);
+    static std::wstring GetHost(LPCWSTR uri, DWORD* scheme);
 
     void SetUIMessageBroker();
     HRESULT ResizeUIWebViews();

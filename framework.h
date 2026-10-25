@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <tchar.h>
 #include <map>
+#include <set>
 
 // App specific includes
 #include "resource.h"

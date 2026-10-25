@@ -11,7 +11,6 @@ class Tab
 public:
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> m_contentController;
     Microsoft::WRL::ComPtr<ICoreWebView2> m_contentWebView;
-    Microsoft::WRL::ComPtr<ICoreWebView2DevToolsProtocolEventReceiver> m_securityStateChangedReceiver;
 
     static std::unique_ptr<Tab> CreateNewTab(HWND hWnd, ICoreWebView2Environment* env, size_t id, bool shouldBeActive);
     ~Tab();
@@ -51,7 +50,7 @@ protected:
     EventRegistrationToken m_uriUpdateForwarderToken = {};
     EventRegistrationToken m_navStartingToken = {};
     EventRegistrationToken m_navCompletedToken = {};
-    EventRegistrationToken m_securityUpdateToken = {};
+    EventRegistrationToken m_certificateErrorToken = {};
     EventRegistrationToken m_messageBrokerToken = {};  // Message broker for browser pages loaded in a tab
     Microsoft::WRL::ComPtr<ICoreWebView2WebMessageReceivedEventHandler> m_messageBroker;
 

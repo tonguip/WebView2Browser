@@ -527,7 +527,7 @@ void BrowserWindow::SetUIMessageBroker()
         break;
         case MG_CANCEL:
         {
-            CheckFailure(m_tabs.at(m_activeTabId)->m_contentWebView->CallDevToolsProtocolMethod(L"Page.stopLoading", L"{}", nullptr), L"");
+            CheckFailure(m_tabs.at(m_activeTabId)->m_contentWebView->Stop(), L"");
         }
         break;
         case MG_SWITCH_TAB:
@@ -831,19 +831,61 @@ HRESULT BrowserWindow::HandleTabNavCompleted(size_t tabId, ICoreWebView2* webvie
     return PostJsonToWebView(jsonObj, m_controlsWebView.Get());
 }
 
-HRESULT BrowserWindow::HandleTabSecurityUpdate(size_t tabId, ICoreWebView2* webview, ICoreWebView2DevToolsProtocolEventReceivedEventArgs* args)
+// The lock in the address bar, from the page's address: WebView2 shows a page
+// over HTTPS once its certificate is valid, or once the user goes on past the
+// warning for a certificate error. The browser used to ask DevTools, keeping a
+// DevTools session on every tab, and runtime 155 never sends the event it
+// listened for: every page, HTTPS too, showed "Not secure".
+HRESULT BrowserWindow::HandleTabSecurityUpdate(size_t tabId, ICoreWebView2* webview)
 {
-    wil::unique_cotaskmem_string jsonArgs;
-    RETURN_IF_FAILED(args->get_ParameterObjectAsJson(&jsonArgs));
-    web::json::value securityEvent = web::json::value::parse(jsonArgs.get());
+    wil::unique_cotaskmem_string source;
+    RETURN_IF_FAILED(webview->get_Source(&source));
+
+    // The browser's own pages, about:blank and the like.
+    std::wstring state(L"neutral");
+    DWORD scheme = URL_SCHEME_UNKNOWN;
+    std::wstring host = GetHost(source.get(), &scheme);
+    if (scheme == URL_SCHEME_HTTPS)
+    {
+        state = m_certificateErrorHosts.count(host) ? L"insecure-broken" : L"secure";
+    }
+    else if (scheme == URL_SCHEME_HTTP)
+    {
+        state = L"insecure";
+    }
 
     web::json::value jsonObj = web::json::value::parse(L"{}");
     jsonObj[L"message"] = web::json::value(MG_SECURITY_UPDATE);
     jsonObj[L"args"] = web::json::value::parse(L"{}");
     jsonObj[L"args"][L"tabId"] = web::json::value::number(tabId);
-    jsonObj[L"args"][L"state"] = securityEvent.at(L"securityState");
+    jsonObj[L"args"][L"state"] = web::json::value(state);
 
     return PostJsonToWebView(jsonObj, m_controlsWebView.Get());
+}
+
+HRESULT BrowserWindow::HandleTabCertificateError(size_t tabId, ICoreWebView2* webview, LPCWSTR uri)
+{
+    DWORD scheme = URL_SCHEME_UNKNOWN;
+    m_certificateErrorHosts.insert(GetHost(uri, &scheme));
+
+    return HandleTabSecurityUpdate(tabId, webview);
+}
+
+std::wstring BrowserWindow::GetHost(LPCWSTR uri, DWORD* scheme)
+{
+    std::wstring host;
+    ComPtr<IUri> parsedUri;
+    if (SUCCEEDED(CreateUri(uri, Uri_CREATE_CANONICALIZE, 0, &parsedUri)))
+    {
+        parsedUri->GetScheme(scheme);
+        wil::unique_bstr hostName;
+        if (SUCCEEDED(parsedUri->GetHost(&hostName)) && hostName)
+        {
+            host = std::wstring(hostName.get());
+        }
+    }
+
+    return host;
 }
 
 void BrowserWindow::HandleTabCreated(size_t tabId, bool shouldBeActive)
@@ -966,22 +1008,40 @@ HRESULT BrowserWindow::HandleTabMessageReceived(size_t tabId, ICoreWebView2* web
 
 HRESULT BrowserWindow::ClearContentCache()
 {
-    return m_tabs.at(m_activeTabId)->m_contentWebView->CallDevToolsProtocolMethod(L"Network.clearBrowserCache", L"{}", nullptr);
+    return ClearBrowsingData(m_tabs.at(m_activeTabId)->m_contentWebView.Get(), COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE);
 }
 
 HRESULT BrowserWindow::ClearControlsCache()
 {
-    return m_controlsWebView->CallDevToolsProtocolMethod(L"Network.clearBrowserCache", L"{}", nullptr);
+    return ClearBrowsingData(m_controlsWebView.Get(), COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE);
 }
 
 HRESULT BrowserWindow::ClearContentCookies()
 {
-    return m_tabs.at(m_activeTabId)->m_contentWebView->CallDevToolsProtocolMethod(L"Network.clearBrowserCookies", L"{}", nullptr);
+    return ClearBrowsingData(m_tabs.at(m_activeTabId)->m_contentWebView.Get(), COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES);
 }
 
 HRESULT BrowserWindow::ClearControlsCookies()
 {
-    return m_controlsWebView->CallDevToolsProtocolMethod(L"Network.clearBrowserCookies", L"{}", nullptr);
+    return ClearBrowsingData(m_controlsWebView.Get(), COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES);
+}
+
+// Clears data of the WebView's profile through the profile rather than a
+// DevTools session, which would then stay on the WebView. Older runtimes can't.
+HRESULT BrowserWindow::ClearBrowsingData(ICoreWebView2* webview, COREWEBVIEW2_BROWSING_DATA_KINDS dataKinds)
+{
+    ComPtr<ICoreWebView2_13> webview13;
+    ComPtr<ICoreWebView2Profile> profile;
+    ComPtr<ICoreWebView2Profile2> profile2;
+    RETURN_IF_FAILED(webview->QueryInterface(IID_PPV_ARGS(&webview13)));
+    RETURN_IF_FAILED(webview13->get_Profile(&profile));
+    RETURN_IF_FAILED(profile.As(&profile2));
+
+    return profile2->ClearBrowsingData(dataKinds, Callback<ICoreWebView2ClearBrowsingDataCompletedHandler>(
+        [](HRESULT result) -> HRESULT
+    {
+        return S_OK;
+    }).Get());
 }
 
 HRESULT BrowserWindow::ResizeUIWebViews()
