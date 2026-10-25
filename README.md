@@ -156,6 +156,8 @@ The sections below describe how some of the features in WebView2Browser were imp
   * [Communicating the WebViews](#communicating-the-webviews)
   * [Tab handling](#tab-handling)
   * [Keeping hidden tabs light](#keeping-hidden-tabs-light)
+  * [Blocking trackers](#blocking-trackers)
+  * [Sharing renderer processes](#sharing-renderer-processes)
   * [Updating the security icon](#updating-the-security-icon)
   * [Populating the history](#populating-the-history)
 * [Handling JSON and URIs](#handling-json-and-uris)
@@ -166,7 +168,7 @@ The sections below describe how some of the features in WebView2Browser were imp
 
 WebView2 allows you to host web content in your Windows app. It exposes the globals [CreateCoreWebView2Environment](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/webview2-idl#createcorewebview2environment) and [CreateCoreWebView2EnvironmentWithOptions](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/webview2-idl#createcorewebview2environmentwithoptions) from which we create the one environment for the browser's UI and content.
 
-When a discrete GPU (NVIDIA or AMD) is installed, `GetBrowserArguments` finds it with DXGI and passes `--force-high-performance-gpu`, so on a laptop with an integrated GPU as well, Chromium draws pages on the discrete one.
+`GetBrowserArguments` passes Chromium a renderer process limit (see [Sharing renderer processes](#sharing-renderer-processes)). When a discrete GPU (NVIDIA or AMD) is installed, `HasDiscreteGpu` finds it with DXGI and `--force-high-performance-gpu` is added, so on a laptop with an integrated GPU as well, Chromium draws pages on the discrete one.
 
 ```cpp
     // Get directory for user data. The browser UI keeps its data apart from
@@ -176,11 +178,7 @@ When a discrete GPU (NVIDIA or AMD) is installed, `GetBrowserArguments` finds it
     MoveBrowserUIData(userDataDirectory);
 
     auto options = Make<CoreWebView2EnvironmentOptions>();
-    std::wstring browserArguments = GetBrowserArguments();
-    if (!browserArguments.empty())
-    {
-        options->put_AdditionalBrowserArguments(browserArguments.c_str());
-    }
+    options->put_AdditionalBrowserArguments(GetBrowserArguments().c_str());
 
     // Create the WebView environment for both the tabs and the browser UI:
     // one browser process, GPU process and network service for all of them,
@@ -721,6 +719,12 @@ A minimized window shows nothing, so `BrowserWindow::SetMinimized`, called on `W
 ### Blocking trackers
 
 Chromium runs each site in a renderer process of its own, and that includes the frames a page embeds from other sites. On news sites most of those frames are ad and tracker frames, each site in its own process: loading eight common sites (Wikipedia, GitHub, YouTube, Reddit, BBC, The Verge, Stack Overflow, CNN) made 83 such frames and 39 renderer processes. `Tab::SetTrackingPrevention` sets the tabs' profile to [Strict tracking prevention](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2profile3#put_preferredtrackingpreventionlevel), as Edge offers it, which blocks most of them: the same sites then make 4 such frames and 13 renderers, and take about 1 GB less committed memory. Pages draw less too. As in Edge, a site that needs a blocked tracker may lose that part of the page.
+
+### Sharing renderer processes
+
+Chromium runs every tab in a renderer process of its own, however many tabs there are. Chrome puts up to two tabs of one site in a process, but that doesn't happen in WebView2, so ten tabs on four sites took ten renderers, each with its own copy of the engine. `GetBrowserArguments` passes `--renderer-process-limit=8` (`c_rendererProcessLimit`, the browser UI's two WebViews included): once there are eight renderers, a new tab or frame goes into an existing process of its site, while a new site still gets a process of its own. Sites stay isolated from each other.
+
+Below the limit, every tab keeps its process, so a background tab busy with scripts can't slow the tab in front. Above it, it can if they are of one site, until the background tab goes to sleep (see [Keeping hidden tabs light](#keeping-hidden-tabs-light)). Ten tabs on Wikipedia, GitHub, Reddit and Stack Overflow, switched every 3 seconds: 14 renderers and 402-409 MB private working set without the limit, 10 renderers and 352 MB with it, peaking at 414 MB rather than 538-565. Switching tabs and the first scroll take as long, and a new tab of a site already open can load faster, its process being up already.
 
 ### Updating the security icon
 

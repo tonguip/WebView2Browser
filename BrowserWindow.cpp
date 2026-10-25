@@ -207,11 +207,7 @@ BOOL BrowserWindow::InitInstance(HINSTANCE hInstance, int nCmdShow)
     MoveBrowserUIData(userDataDirectory);
 
     auto options = Make<CoreWebView2EnvironmentOptions>();
-    std::wstring browserArguments = GetBrowserArguments();
-    if (!browserArguments.empty())
-    {
-        options->put_AdditionalBrowserArguments(browserArguments.c_str());
-    }
+    options->put_AdditionalBrowserArguments(GetBrowserArguments().c_str());
 
     // Create the WebView environment for both the tabs and the browser UI:
     // one browser process, GPU process and network service for all of them,
@@ -288,15 +284,33 @@ void BrowserWindow::MoveBrowserUIData(const std::wstring& userDataDirectory)
     fs::copy(oldIndexedDB, profile / L"IndexedDB", fs::copy_options::recursive, error);
 }
 
+// Once there are c_rendererProcessLimit renderer processes, a new tab or frame
+// goes into a process of its site if there is one, rather than one of its own;
+// a new site still gets a process. Chromium otherwise gives every tab its own
+// process however many there are (Chrome puts up to two tabs of a site in one,
+// which WebView2 doesn't do), so tabs of one site each paid for a renderer.
+// Below the limit each tab keeps a process of its own, so a busy background
+// tab doesn't slow the one in front.
+std::wstring BrowserWindow::GetBrowserArguments()
+{
+    std::wstring arguments = L"--renderer-process-limit=" + std::to_wstring(c_rendererProcessLimit);
+    if (HasDiscreteGpu())
+    {
+        arguments.append(L" --force-high-performance-gpu");
+    }
+
+    return arguments;
+}
+
 // Chromium draws on the GPU Windows gives it. Where a discrete GPU (NVIDIA or
 // AMD) is there, beside an integrated one or alone, it is asked for the high
 // performance one, which with a single GPU is that GPU anyway.
-std::wstring BrowserWindow::GetBrowserArguments()
+bool BrowserWindow::HasDiscreteGpu()
 {
     ComPtr<IDXGIFactory6> factory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
     {
-        return L"";
+        return false;
     }
 
     ComPtr<IDXGIAdapter1> adapter;
@@ -313,11 +327,11 @@ std::wstring BrowserWindow::GetBrowserArguments()
         const UINT amd = 0x1002;
         if (desc.VendorId == nvidia || desc.VendorId == amd)
         {
-            return L"--force-high-performance-gpu";
+            return true;
         }
     }
 
-    return L"";
+    return false;
 }
 
 void BrowserWindow::SetMemoryUsage(ICoreWebView2* webview, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL level)
