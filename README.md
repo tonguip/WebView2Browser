@@ -685,7 +685,7 @@ HRESULT BrowserWindow::SwitchToTab(size_t tabId)
 
 ### Keeping hidden tabs light
 
-`Tab::SetVisible` shows or hides the tab's WebView and, as Edge does for background tabs, lowers what a hidden tab keeps in memory in two steps. A tab hidden for 30 seconds gets [MemoryUsageTargetLevel](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2_19#put_memoryusagetargetlevel) `LOW`: Chromium frees the page's caches and garbage and lets Windows page out the rest. Five minutes after it was hidden, it is suspended with [TrySuspend](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2_3#trysuspend), which pauses its scripts, timers and animations like a sleeping tab. Showing it again sets the level back to `NORMAL`, and WebView2 resumes a suspended WebView as it becomes visible. A tab playing sound keeps its memory, and WebView2 refuses to suspend pages that can't sleep (a call, a camera), which are asked again later. The timers are window timers named by the tab ID, handled as `WM_TIMER` in `BrowserWindow`.
+`Tab::SetVisible` shows or hides the tab's WebView and, as Edge does for background tabs, lowers what a hidden tab keeps in memory in steps. A tab hidden for 10 seconds gets [MemoryUsageTargetLevel](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2_19#put_memoryusagetargetlevel) `LOW`: Chromium frees the page's caches and garbage and lets Windows page out the rest. Showing a low tab costs a few milliseconds, so even tabs the user flips between don't keep all their memory. A page that has just loaded is still fetching and running scripts and takes much of it back, so 20 seconds later the tab is trimmed again, the level going to `NORMAL` and back to `LOW`. Five minutes after it was hidden, it is suspended with [TrySuspend](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2_3#trysuspend), which pauses its scripts, timers and animations like a sleeping tab. Showing it again sets the level back to `NORMAL`, and WebView2 resumes a suspended WebView as it becomes visible. A tab playing sound keeps its memory, and WebView2 refuses to suspend pages that can't sleep (a call, a camera), which are asked again later. The timers are window timers named by the tab ID, handled as `WM_TIMER` in `BrowserWindow`.
 
 ```cpp
 HRESULT Tab::SetVisible(bool visible)
@@ -696,7 +696,7 @@ HRESULT Tab::SetVisible(bool visible)
     {
         KillTimer(m_parentHWnd, m_tabId);
         // WebView2 resumes a suspended tab as it shows.
-        if (*m_memory == Memory::Low || *m_memory == Memory::Suspended)
+        if (IsTrimmed())
         {
             BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
         }
@@ -712,7 +712,7 @@ HRESULT Tab::SetVisible(bool visible)
 }
 ```
 
-Waking a sleeping tab takes a moment, so it starts before the click: when the pointer enters a tab in the strip, the controls WebView posts `MG_WAKE_TAB`, and `Tab::Wake` resumes the tab and gives it its memory back. If it isn't clicked, it is trimmed again 30 seconds later.
+Waking a sleeping tab takes a moment, so it starts before the click: when the pointer enters a tab in the strip, the controls WebView posts `MG_WAKE_TAB`, and `Tab::Wake` resumes the tab and gives it its memory back. If it isn't clicked, it is trimmed again 10 seconds later.
 
 The options dropdown, hidden most of the time, keeps its memory low while it is hidden too.
 

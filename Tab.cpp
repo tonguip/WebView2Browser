@@ -125,10 +125,15 @@ Tab::~Tab()
     KillTimer(m_parentHWnd, m_tabId);
 }
 
+bool Tab::IsTrimmed() const
+{
+    return *m_memory == Memory::Low || *m_memory == Memory::Settled || *m_memory == Memory::Suspended;
+}
+
 // Shows or hides the tab. Once hidden for c_trimAfterMs, WebView2 keeps its
-// memory low, as Edge does for background tabs, and c_suspendAfterMs later
-// suspends it, like a sleeping tab. Its timer is named by the tab ID and
-// arrives as WM_TIMER in BrowserWindow.
+// memory low, as Edge does for background tabs, and later suspends it, like
+// a sleeping tab. Its timer is named by the tab ID and arrives as WM_TIMER in
+// BrowserWindow.
 HRESULT Tab::SetVisible(bool visible)
 {
     RETURN_IF_FAILED(m_contentController->put_IsVisible(visible));
@@ -137,7 +142,7 @@ HRESULT Tab::SetVisible(bool visible)
     {
         KillTimer(m_parentHWnd, m_tabId);
         // WebView2 resumes a suspended tab as it shows.
-        if (*m_memory == Memory::Low || *m_memory == Memory::Suspended)
+        if (IsTrimmed())
         {
             BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
         }
@@ -157,7 +162,7 @@ HRESULT Tab::SetVisible(bool visible)
 // trimmed again if it stays hidden.
 void Tab::Wake()
 {
-    if (*m_memory != Memory::Low && *m_memory != Memory::Suspended)
+    if (!IsTrimmed())
     {
         return;
     }
@@ -194,9 +199,17 @@ void Tab::OnHiddenTimer()
 
         BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
         *m_memory = Memory::Low;
-        SetTimer(m_parentHWnd, m_tabId, c_suspendAfterMs, nullptr);
+        SetTimer(m_parentHWnd, m_tabId, c_retrimAfterMs, nullptr);
     }
     else if (*m_memory == Memory::Low)
+    {
+        // Through Normal, so that WebView2 sees the level change and trims.
+        BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
+        BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
+        *m_memory = Memory::Settled;
+        SetTimer(m_parentHWnd, m_tabId, c_suspendAfterMs, nullptr);
+    }
+    else if (*m_memory == Memory::Settled)
     {
         ComPtr<ICoreWebView2_3> webview3;
         if (FAILED(m_contentWebView.As(&webview3)))
@@ -213,7 +226,7 @@ void Tab::OnHiddenTimer()
         {
             std::shared_ptr<Memory> state = memory.lock();
             // Unless the tab closed or showed meanwhile.
-            if (state && *state == Memory::Low)
+            if (state && *state == Memory::Settled)
             {
                 if (SUCCEEDED(errorCode) && isSuccessful)
                 {

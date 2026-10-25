@@ -21,8 +21,13 @@ public:
     void OnHiddenTimer();
 protected:
     // How long a tab stays hidden before WebView2 is asked to keep its memory
-    // low: long enough that flipping between tabs finds them as they were.
-    static const UINT c_trimAfterMs = 30 * 1000;
+    // low. Showing a low tab again costs a few milliseconds, so tabs the user
+    // flips between needn't keep all of theirs.
+    static const UINT c_trimAfterMs = 10 * 1000;
+    // How long it then stays low before it is trimmed again: a page that just
+    // loaded is still fetching and running scripts, and takes much of its
+    // memory back after the first trim.
+    static const UINT c_retrimAfterMs = 20 * 1000;
     // How long it then stays low before it is suspended, five minutes after
     // it was hidden.
     static const UINT c_suspendAfterMs = 270 * 1000;
@@ -33,8 +38,10 @@ protected:
         Normal,     // The tab shows.
         Hidden,     // Hidden; it goes Low after c_trimAfterMs.
         Low,        // Caches and garbage freed, the rest may be paged out.
+        Settled,    // Low, and trimmed again c_retrimAfterMs later.
         Suspended,  // Scripts and timers paused, renderer memory given back.
     };
+    bool IsTrimmed() const;
     // Shared with a pending TrySuspend, which may finish after the tab closed.
     std::shared_ptr<Memory> m_memory = std::make_shared<Memory>(Memory::Normal);
 
