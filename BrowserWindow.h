@@ -54,6 +54,7 @@ protected:
     Microsoft::WRL::ComPtr<ICoreWebView2> m_optionsWebView;
     std::map<size_t,std::unique_ptr<Tab>> m_tabs;
     size_t m_activeTabId = 0;
+    bool m_minimized = false;
 
     EventRegistrationToken m_controlsUIMessageBrokerToken = {};  // Token for the UI message handler in controls WebView
     EventRegistrationToken m_controlsZoomToken = {};
@@ -79,5 +80,7 @@ protected:
     void UpdateMinWindowSize();
     HRESULT PostJsonToWebView(web::json::value jsonObj, ICoreWebView2* webview);
     HRESULT SwitchToTab(size_t tabId);
+    void SetMinimized(bool minimized);
     std::wstring GetFilePathAsURI(std::wstring fullPath);
+    std::wstring GetURIToShow(const std::wstring& uri);
 };

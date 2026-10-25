@@ -97,6 +97,11 @@ LRESULT CALLBACK BrowserWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, 
     }
     case WM_SIZE:
     {
+        // WM_DPICHANGED falls through here, with a DPI in wParam.
+        if (message == WM_SIZE)
+        {
+            SetMinimized(wParam == SIZE_MINIMIZED);
+        }
         ResizeUIWebViews();
         if (m_tabs.find(m_activeTabId) != m_tabs.end())
         {
@@ -469,7 +474,8 @@ void BrowserWindow::SetUIMessageBroker()
             {
                 // No encoded search URI
                 std::wstring path = uri.substr(browserScheme.size());
-                if (path.compare(L"favorites") == 0 ||
+                if (path.compare(L"newtab") == 0 ||
+                    path.compare(L"favorites") == 0 ||
                     path.compare(L"settings") == 0 ||
                     path.compare(L"history") == 0)
                 {
@@ -608,6 +614,28 @@ HRESULT BrowserWindow::SwitchToTab(size_t tabId)
     return S_OK;
 }
 
+// A minimized window shows nothing: its tab is hidden as a background tab is,
+// so it keeps little memory and later sleeps, and the toolbar stops drawing.
+// Both show again as the window does.
+void BrowserWindow::SetMinimized(bool minimized)
+{
+    if (minimized == m_minimized)
+    {
+        return;
+    }
+    m_minimized = minimized;
+
+    if (m_controlsController)
+    {
+        m_controlsController->put_IsVisible(!minimized);
+    }
+    auto tab = m_tabs.find(m_activeTabId);
+    if (tab != m_tabs.end() && tab->second->m_contentController)
+    {
+        tab->second->SetVisible(!minimized);
+    }
+}
+
 HRESULT BrowserWindow::HandleTabURIUpdate(size_t tabId, ICoreWebView2* webview)
 {
     wil::unique_cotaskmem_string source;
@@ -619,27 +647,31 @@ HRESULT BrowserWindow::HandleTabURIUpdate(size_t tabId, ICoreWebView2* webview)
     jsonObj[L"args"][L"tabId"] = web::json::value::number(tabId);
     jsonObj[L"args"][L"uri"] = web::json::value(source.get());
 
-    std::wstring uri(source.get());
-    std::wstring favoritesURI = GetFilePathAsURI(GetFullPathFor(L"wvbrowser_ui\\content_ui\\favorites.html"));
-    std::wstring settingsURI = GetFilePathAsURI(GetFullPathFor(L"wvbrowser_ui\\content_ui\\settings.html"));
-    std::wstring historyURI = GetFilePathAsURI(GetFullPathFor(L"wvbrowser_ui\\content_ui\\history.html"));
-
-    if (uri.compare(favoritesURI) == 0)
+    std::wstring uriToShow = GetURIToShow(source.get());
+    if (!uriToShow.empty())
     {
-        jsonObj[L"args"][L"uriToShow"] = web::json::value(L"browser://favorites");
-    }
-    else if (uri.compare(settingsURI) == 0)
-    {
-        jsonObj[L"args"][L"uriToShow"] = web::json::value(L"browser://settings");
-    }
-    else if (uri.compare(historyURI) == 0)
-    {
-        jsonObj[L"args"][L"uriToShow"] = web::json::value(L"browser://history");
+        jsonObj[L"args"][L"uriToShow"] = web::json::value(uriToShow);
     }
 
     RETURN_IF_FAILED(PostJsonToWebView(jsonObj, m_controlsWebView.Get()));
 
     return S_OK;
+}
+
+// The address bar shows the browser's own pages as browser://<page>, and
+// nothing for a new tab's.
+std::wstring BrowserWindow::GetURIToShow(const std::wstring& uri)
+{
+    for (LPCWSTR page : { L"newtab", L"favorites", L"settings", L"history" })
+    {
+        std::wstring path = std::wstring(L"wvbrowser_ui\\content_ui\\") + page + L".html";
+        if (uri.compare(GetFilePathAsURI(GetFullPathFor(path.c_str()))) == 0)
+        {
+            return std::wstring(L"browser://") + page;
+        }
+    }
+
+    return L"";
 }
 
 HRESULT BrowserWindow::HandleTabHistoryUpdate(size_t tabId, ICoreWebView2* webview)
@@ -652,6 +684,12 @@ HRESULT BrowserWindow::HandleTabHistoryUpdate(size_t tabId, ICoreWebView2* webvi
     jsonObj[L"args"] = web::json::value::parse(L"{}");
     jsonObj[L"args"][L"tabId"] = web::json::value::number(tabId);
     jsonObj[L"args"][L"uri"] = web::json::value(source.get());
+
+    std::wstring uriToShow = GetURIToShow(source.get());
+    if (!uriToShow.empty())
+    {
+        jsonObj[L"args"][L"uriToShow"] = web::json::value(uriToShow);
+    }
 
     BOOL canGoForward = FALSE;
     RETURN_IF_FAILED(webview->get_CanGoForward(&canGoForward));

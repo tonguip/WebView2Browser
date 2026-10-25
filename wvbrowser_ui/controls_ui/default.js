@@ -258,6 +258,11 @@ function updateURI() {
     }
 
     let activeTab = tabs.get(activeTabId);
+    // A new tab's page leaves the address bar empty to type in
+    if (activeTab.uriToShow == 'browser://newtab') {
+        document.getElementById('address-field').value = '';
+        return;
+    }
     document.getElementById('address-field').value = activeTab.uriToShow || activeTab.uri;
 }
 

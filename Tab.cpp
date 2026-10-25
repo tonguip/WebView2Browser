@@ -81,7 +81,11 @@ HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive)
 
         SetTrackingPrevention();
 
-        RETURN_IF_FAILED(m_contentWebView->Navigate(L"https://www.bing.com"));
+        // A new tab shows a page of the browser's own, which loads at once
+        // and keeps little memory, until the user says where to go. A web
+        // page there would load, and keep a renderer busy, for nothing.
+        std::wstring newTabPath = browserWindow->GetFullPathFor(L"wvbrowser_ui\\content_ui\\newtab.html");
+        RETURN_IF_FAILED(m_contentWebView->Navigate(newTabPath.c_str()));
         browserWindow->HandleTabCreated(m_tabId, shouldBeActive);
 
         return S_OK;

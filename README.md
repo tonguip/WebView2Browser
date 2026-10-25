@@ -279,7 +279,8 @@ You can navigate to a web page by entering its URI in the address bar. When pres
             {
                 // No encoded search URI
                 std::wstring path = uri.substr(browserScheme.size());
-                if (path.compare(L"favorites") == 0 ||
+                if (path.compare(L"newtab") == 0 ||
+                    path.compare(L"favorites") == 0 ||
                     path.compare(L"settings") == 0 ||
                     path.compare(L"history") == 0)
                 {
@@ -302,7 +303,7 @@ You can navigate to a web page by entering its URI in the address bar. When pres
         break;
 ```
 
-WebView2Browser will check the URI against browser pages (i.e. favorites, settings, history) and navigate to the requested location or use the provided URI to search Bing as a fallback.
+WebView2Browser will check the URI against browser pages (i.e. new tab, favorites, settings, history) and navigate to the requested location or use the provided URI to search Bing as a fallback.
 
 ### Updating the address bar
 
@@ -653,7 +654,8 @@ HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive)
 
         // Handle security state updates
 
-        RETURN_IF_FAILED(m_contentWebView->Navigate(L"https://www.bing.com"));
+        std::wstring newTabPath = browserWindow->GetFullPathFor(L"wvbrowser_ui\\content_ui\\newtab.html");
+        RETURN_IF_FAILED(m_contentWebView->Navigate(newTabPath.c_str()));
         browserWindow->HandleTabCreated(m_tabId, shouldBeActive);
 
         return S_OK;
@@ -661,7 +663,7 @@ HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive)
 }
 ```
 
-The tab registers all handlers so it can forward updates to the controls WebView when events fire. The tab is ready and will be shown on the content area of the browser. Clicking on a tab in the controls WebView will post a message to the host application, which will in turn hide the WebView for the previously active tab and show the one for the clicked tab.
+The tab registers all handlers so it can forward updates to the controls WebView when events fire. It opens on `browser://newtab`, a blank page of the browser's own, with nothing in the address bar to type over. A web page there, like Bing's start page, would load in every new tab before the user says where to go, and keep a renderer of 110 to 160 MB while the tab stays on it; the local page loads at once in a few MB. Search from the address bar still goes to Bing. The tab is ready and will be shown on the content area of the browser. Clicking on a tab in the controls WebView will post a message to the host application, which will in turn hide the WebView for the previously active tab and show the one for the clicked tab.
 
 ```cpp
 HRESULT BrowserWindow::SwitchToTab(size_t tabId)
@@ -713,6 +715,8 @@ HRESULT Tab::SetVisible(bool visible)
 Waking a sleeping tab takes a moment, so it starts before the click: when the pointer enters a tab in the strip, the controls WebView posts `MG_WAKE_TAB`, and `Tab::Wake` resumes the tab and gives it its memory back. If it isn't clicked, it is trimmed again 30 seconds later.
 
 The options dropdown, hidden most of the time, keeps its memory low while it is hidden too.
+
+A minimized window shows nothing, so `BrowserWindow::SetMinimized`, called on `WM_SIZE`, hides its active tab as if it were in the background, which then keeps little memory and sleeps in time like any other, and stops the controls WebView drawing. Restoring the window shows both again.
 
 ### Blocking trackers
 
