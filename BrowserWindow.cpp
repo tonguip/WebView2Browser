@@ -731,31 +731,25 @@ HRESULT BrowserWindow::HandleTabNavStarting(size_t tabId, ICoreWebView2* webview
     return PostJsonToWebView(jsonObj, m_controlsWebView.Get());
 }
 
+// The title used to be asked of the page once it finished loading. A page the
+// user left before then never had its own title, and its history entry kept
+// the previous page's.
+HRESULT BrowserWindow::HandleTabTitleUpdate(size_t tabId, ICoreWebView2* webview)
+{
+    wil::unique_cotaskmem_string title;
+    RETURN_IF_FAILED(webview->get_DocumentTitle(&title));
+
+    web::json::value jsonObj = web::json::value::parse(L"{}");
+    jsonObj[L"message"] = web::json::value(MG_UPDATE_TAB);
+    jsonObj[L"args"] = web::json::value::parse(L"{}");
+    jsonObj[L"args"][L"title"] = web::json::value(title.get());
+    jsonObj[L"args"][L"tabId"] = web::json::value::number(tabId);
+
+    return PostJsonToWebView(jsonObj, m_controlsWebView.Get());
+}
+
 HRESULT BrowserWindow::HandleTabNavCompleted(size_t tabId, ICoreWebView2* webview, ICoreWebView2NavigationCompletedEventArgs* args)
 {
-    std::wstring getTitleScript(
-        // Look for a title tag
-        L"(() => {"
-        L"    const titleTag = document.getElementsByTagName('title')[0];"
-        L"    if (titleTag) {"
-        L"        return titleTag.innerHTML;"
-        L"    }"
-        // No title tag, look for the file name
-        L"    pathname = window.location.pathname;"
-        L"    var filename = pathname.split('/').pop();"
-        L"    if (filename) {"
-        L"        return filename;"
-        L"    }"
-        // No file name, look for the hostname
-        L"    const hostname =  window.location.hostname;"
-        L"    if (hostname) {"
-        L"        return hostname;"
-        L"    }"
-        // Fallback: let the UI use a generic title
-        L"    return '';"
-        L"})();"
-    );
-
     std::wstring getFaviconURI(
         L"(() => {"
         // Let the UI use a fallback favicon
@@ -789,21 +783,6 @@ HRESULT BrowserWindow::HandleTabNavCompleted(size_t tabId, ICoreWebView2* webvie
         L"    return faviconURI;"
         L"})();"
     );
-
-    CheckFailure(webview->ExecuteScript(getTitleScript.c_str(), Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
-        [this, tabId](HRESULT error, PCWSTR result) -> HRESULT
-    {
-        RETURN_IF_FAILED(error);
-
-        web::json::value jsonObj = web::json::value::parse(L"{}");
-        jsonObj[L"message"] = web::json::value(MG_UPDATE_TAB);
-        jsonObj[L"args"] = web::json::value::parse(L"{}");
-        jsonObj[L"args"][L"title"] = web::json::value::parse(result);
-        jsonObj[L"args"][L"tabId"] = web::json::value::number(tabId);
-
-        CheckFailure(PostJsonToWebView(jsonObj, m_controlsWebView.Get()), L"Can't update title.");
-        return S_OK;
-    }).Get()), L"Can't update title.");
 
     CheckFailure(webview->ExecuteScript(getFaviconURI.c_str(), Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
         [this, tabId](HRESULT error, PCWSTR result) -> HRESULT

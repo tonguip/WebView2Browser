@@ -77,6 +77,14 @@ HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive, NewWindow 
             return S_OK;
         }).Get(), &m_navCompletedToken));
 
+        // The title as soon as the page has one, and each time it changes it
+        RETURN_IF_FAILED(m_contentWebView->add_DocumentTitleChanged(Callback<ICoreWebView2DocumentTitleChangedEventHandler>(
+            [this, browserWindow](ICoreWebView2* webview, IUnknown* args) -> HRESULT
+        {
+            BrowserWindow::CheckFailure(browserWindow->HandleTabTitleUpdate(m_tabId, webview), L"Can't update title.");
+            return S_OK;
+        }).Get(), &m_titleChangedToken));
+
         // A certificate error shows the host's pages as not secure, also once
         // the user goes on past the warning. Older runtimes don't say.
         ComPtr<ICoreWebView2_14> webview14;

@@ -65,6 +65,7 @@ protected:
     EventRegistrationToken m_uriUpdateForwarderToken = {};
     EventRegistrationToken m_navStartingToken = {};
     EventRegistrationToken m_navCompletedToken = {};
+    EventRegistrationToken m_titleChangedToken = {};
     EventRegistrationToken m_certificateErrorToken = {};
     EventRegistrationToken m_processFailedToken = {};
     EventRegistrationToken m_newWindowToken = {};

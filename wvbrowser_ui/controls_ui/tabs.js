@@ -38,6 +38,7 @@ function createNewTab(shouldBeActive, openerTabId) {
         canGoForward: false,
         securityState: 'unknown',
         historyItemId: INVALID_HISTORY_ID,
+        addingHistoryItem: null,
         openerTabId: openerTabId || INVALID_TAB_ID
     });
 
@@ -189,8 +190,22 @@ function updatedFaviconURIHandler(tabId, tab) {
     updateNavigationUI(commands.MG_UPDATE_FAVICON);
 
     // Update favicon in history item
+    updateTabHistoryItem(tabId);
+}
+
+// The tab's history entry takes its title and favicon. While the entry is
+// being added there's no ID to update yet (the one before was the previous
+// page's entry), so the update waits for it. Browser pages have no entry.
+function updateTabHistoryItem(tabId) {
+    if (!isValidTabId(tabId)) {
+        return;
+    }
+
+    const tab = tabs.get(tabId);
     if (tab.historyItemId != INVALID_HISTORY_ID) {
         updateHistoryItem(tab.historyItemId, historyItemFromTab(tabId));
+    } else if (tab.addingHistoryItem) {
+        tab.addingHistoryItem.update = historyItemFromTab(tabId);
     }
 }
 

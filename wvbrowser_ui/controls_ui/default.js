@@ -38,19 +38,33 @@ const messageHandler = event => {
                     break;
                 }
 
+                // The previous page's entry is done with
+                tab.historyItemId = INVALID_HISTORY_ID;
+                tab.addingHistoryItem = null;
+
                 // Filter URIs that should not appear in history
                 if (!tab.uri || tab.uri == 'about:blank') {
-                    tab.historyItemId = INVALID_HISTORY_ID;
                     break;
                 }
 
                 if (tab.uriToShow && tab.uriToShow.substring(0, 10) == 'browser://') {
-                    tab.historyItemId = INVALID_HISTORY_ID;
                     break;
                 }
 
-                addHistoryItem(historyItemFromTab(args.tabId), (id) => {
-                    tab.historyItemId = id;
+                // The page's title and favicon, while its entry is being
+                // added, go in once it has an ID (see updateTabHistoryItem)
+                const adding = { item: historyItemFromTab(args.tabId), update: null };
+                tab.addingHistoryItem = adding;
+                addHistoryItem(adding.item, (id) => {
+                    // Unless the tab went on to another page meanwhile
+                    if (tab.addingHistoryItem == adding) {
+                        tab.addingHistoryItem = null;
+                        tab.historyItemId = id;
+                    }
+
+                    if (adding.update) {
+                        updateHistoryItem(id, adding.update);
+                    }
                 });
             }
             break;
@@ -94,10 +108,7 @@ const messageHandler = event => {
                 tabLabelSpan.textContent = tab.title;
 
                 // Update title in history item
-                // Browser pages will keep an invalid history ID
-                if (tab.historyItemId != INVALID_HISTORY_ID) {
-                    updateHistoryItem(tab.historyItemId, historyItemFromTab(args.tabId));
-                }
+                updateTabHistoryItem(args.tabId);
             }
             break;
         case commands.MG_OPTIONS_LOST_FOCUS:
