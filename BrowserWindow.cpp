@@ -5,6 +5,7 @@
 #include "BrowserWindow.h"
 #include "shlobj.h"
 #include "WebView2EnvironmentOptions.h"
+#include <algorithm>
 #include <dxgi1_6.h>
 #include <filesystem>
 #include <Urlmon.h>
@@ -284,7 +285,7 @@ void BrowserWindow::MoveBrowserUIData(const std::wstring& userDataDirectory)
     fs::copy(oldIndexedDB, profile / L"IndexedDB", fs::copy_options::recursive, error);
 }
 
-// Once there are c_rendererProcessLimit renderer processes, a new tab or frame
+// Once there are GetRendererProcessLimit renderer processes, a new tab or frame
 // goes into a process of its site if there is one, rather than one of its own;
 // a new site still gets a process. Chromium otherwise gives every tab its own
 // process however many there are (Chrome puts up to two tabs of a site in one,
@@ -293,13 +294,32 @@ void BrowserWindow::MoveBrowserUIData(const std::wstring& userDataDirectory)
 // tab doesn't slow the one in front.
 std::wstring BrowserWindow::GetBrowserArguments()
 {
-    std::wstring arguments = L"--renderer-process-limit=" + std::to_wstring(c_rendererProcessLimit);
+    std::wstring arguments = L"--renderer-process-limit=" + std::to_wstring(GetRendererProcessLimit());
     if (HasDiscreteGpu())
     {
         arguments.append(L" --force-high-performance-gpu");
     }
 
     return arguments;
+}
+
+// The less memory installed, the sooner tabs of a site share a process: 4 with
+// 8 GB, 8 with 16 GB, 16 with 32 GB. Each process fewer saves 40-60 MB of
+// committed memory, which counts for more where there is less of it.
+int BrowserWindow::GetRendererProcessLimit()
+{
+    ULONGLONG kilobytes = 0;
+    if (!GetPhysicallyInstalledSystemMemory(&kilobytes))
+    {
+        MEMORYSTATUSEX status = { sizeof(status) };
+        if (GlobalMemoryStatusEx(&status))
+        {
+            kilobytes = status.ullTotalPhys / 1024;
+        }
+    }
+
+    const int gigabytes = static_cast<int>((kilobytes + 512 * 1024) / (1024 * 1024));
+    return std::clamp(gigabytes / c_gbPerRenderer, c_minRendererProcessLimit, c_maxRendererProcessLimit);
 }
 
 // Chromium draws on the GPU Windows gives it. Where a discrete GPU (NVIDIA or

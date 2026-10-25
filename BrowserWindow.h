@@ -43,8 +43,11 @@ protected:
     // Where WebView2 keeps that profile's data in the user data folder.
     static constexpr LPCWSTR c_uiProfileFolder = L"EBWebView\\WV2Profile_browserui";
     // How many renderer processes, the browser UI's two included, there are
-    // before tabs of one site share one (see GetBrowserArguments).
-    static const int c_rendererProcessLimit = 8;
+    // before tabs of one site share one: one for every c_gbPerRenderer GB of
+    // memory installed, within these bounds (see GetRendererProcessLimit).
+    static const int c_gbPerRenderer = 2;
+    static const int c_minRendererProcessLimit = 4;
+    static const int c_maxRendererProcessLimit = 16;
 
     HINSTANCE m_hInst = nullptr;  // Current app instance
     HWND m_hWnd = nullptr;
@@ -81,6 +84,7 @@ protected:
     HRESULT CreateUIController(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler* handler);
     void MoveBrowserUIData(const std::wstring& userDataDirectory);
     static std::wstring GetBrowserArguments();
+    static int GetRendererProcessLimit();
     static bool HasDiscreteGpu();
     HRESULT CreateBrowserControlsWebView();
     HRESULT CreateBrowserOptionsWebView();

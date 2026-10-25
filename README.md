@@ -782,9 +782,32 @@ Chromium runs each site in a renderer process of its own, and that includes the 
 
 ### Sharing renderer processes
 
-Chromium runs every tab in a renderer process of its own, however many tabs there are. Chrome puts up to two tabs of one site in a process, but that doesn't happen in WebView2, so ten tabs on four sites took ten renderers, each with its own copy of the engine. `GetBrowserArguments` passes `--renderer-process-limit=8` (`c_rendererProcessLimit`, the browser UI's two WebViews included): once there are eight renderers, a new tab or frame goes into an existing process of its site, while a new site still gets a process of its own. Sites stay isolated from each other.
+Chromium runs every tab in a renderer process of its own, however many tabs there are. Chrome puts up to two tabs of one site in a process, but that doesn't happen in WebView2, so ten tabs on four sites took ten renderers, each with its own copy of the engine. `GetBrowserArguments` passes `--renderer-process-limit` (the browser UI's two WebViews included): once there are that many renderers, a new tab or frame goes into an existing process of its site, while a new site still gets a process of its own. Sites stay isolated from each other. `GetRendererProcessLimit` sets the limit from the memory installed, one renderer for every 2 GB, from 4 to 16: 4 with 8 GB, 8 with 16 GB, 16 with 32 GB.
 
-Below the limit, every tab keeps its process, so a background tab busy with scripts can't slow the tab in front. Above it, it can if they are of one site, until the background tab goes to sleep (see [Keeping hidden tabs light](#keeping-hidden-tabs-light)). Ten tabs on Wikipedia, GitHub, Reddit and Stack Overflow, switched every 3 seconds: 14 renderers and 402-409 MB private working set without the limit, 10 renderers and 352 MB with it, peaking at 414 MB rather than 538-565. Switching tabs and the first scroll take as long, and a new tab of a site already open can load faster, its process being up already.
+Below the limit, every tab keeps its process, so a background tab busy with scripts can't slow the tab in front. Above it, it can if they are of one site, until the background tab goes to sleep (see [Keeping hidden tabs light](#keeping-hidden-tabs-light)). Ten tabs on Wikipedia, GitHub, Reddit and Stack Overflow, switched every 3 seconds: 14 renderers and 402-409 MB private working set without a limit, 10 renderers and 352 MB with 8, peaking at 414 MB rather than 538-565. Switching tabs and the first scroll take as long, and a new tab of a site already open can load faster, its process being up already.
+
+The same ten tabs with other limits, 90 seconds of switching each (one run each, on a 16 GB machine):
+
+| Limit | Renderers | Private working set, mean and peak | Committed, mean | Tab switch, median |
+| --- | --- | --- | --- | --- |
+| 4 | 8 | 332 and 361 MB | 962 MB | 65 ms |
+| 6 | 9 | 324 and 360 MB | 990 MB | 66 ms |
+| 8 | 10 | 347 and 392 MB | 1,037 MB | 56 ms |
+| 12 | 12 | 360 and 413 MB | 1,155 MB | 59 ms |
+
+Each renderer fewer saves 40-60 MB of committed memory but little working set, as hidden tabs are paged out anyway, and with four sites a limit below 8 can't take away more than two. Switching back to the tabs after a minute hidden took a median 47-69 ms at every limit. An 8 GB machine was stood in for by holding 4.6 GB of RAM in another process, leaving about 1.4 GB available, as with a few other apps open: tab switches then took a median 77 and 80 ms at limits 4 and 6, and 101 ms at 8. This is untested on real 8 GB hardware, and Chromium's own memory-based sizes (GPU caches, saved frames) only step down below 4 GB, so it runs the same on 8 GB as on 16 GB until memory runs low.
+
+### What the GPU process keeps
+
+The GPU process draws for every WebView. With the eight sites above open and used, it had 221-226 MB private working set, and 351-356 MB of the GPU's own memory and 83-84 MB of shared memory. Chromium's memory dumps (`Tracing.requestMemoryDump` over the DevTools protocol) show what it holds:
+
+- Its heap, 145-168 MB, of which the Windows heap, mostly the graphics driver's, is 36-40 MB.
+- Caches: Skia's scratch textures (23 MB) and images the pages uploaded (23 MB), which it frees once the tabs are hidden.
+- For every tab, hidden or not, the swap chain its WebView draws into, and a hidden tab's last frame. Nine tabs held 43 MB of swap chains and about 60 MB of last frames with the window at its default size, a 1904x644 page, and twice the swap chains and 1.6 times the frames at 2560x1040.
+
+With all tabs hidden, Chromium's critical memory pressure (`Memory.simulatePressureNotification`) took the GPU process from 144-154 MB to 95-102 MB, but none of hiding, `LOW`, `TrySuspend`, memory pressure or Chromium's `EvictionUnlocksResources` and `ScalableFrameEviction` features freed the swap chains and last frames. Each hidden tab keeps about 20 MB of GPU memory at the default window size. The tile budget Chromium gives the tab in front on desktop, 512 MB, is far above what pages used (up to 71 MB), so lowering it with `--force-gpu-mem-available-mb` wouldn't save anything.
+
+With a discrete GPU, that is memory on the graphics card. Integrated graphics have no memory of their own, so on a laptop without a discrete GPU it comes out of RAM: about 30 MB for each hidden tab with a full HD window, by the same measure. That is untested, as is a laptop with both kinds of GPU, where `--force-high-performance-gpu` keeps it on the discrete GPU but keeps that GPU powered. Only closing a hidden tab's WebView frees it, which a browser for small machines could do with tabs hidden for long, loading them again when shown, as Chrome's Memory Saver does.
 
 ### Recovering from a renderer crash
 
