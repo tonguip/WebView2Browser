@@ -136,6 +136,7 @@ add_WebMessageReceived | Used to handle web messages posted to the WebView.
 CallDevToolsProtocolMethod | Used to enable listening for security events, which will notify of security status changes in a document.
 put_MemoryUsageTargetLevel | Used to keep the memory of hidden tabs and the hidden options dropdown low.
 TrySuspend | Used to suspend tabs that have been hidden for five minutes.
+get_Profile | Used with ICoreWebView2Profile3::put_PreferredTrackingPreventionLevel to block most trackers in tabs.
 
 ICoreWebView2Controller API | Feature(s)
 :--- | :---
@@ -712,6 +713,10 @@ HRESULT Tab::SetVisible(bool visible)
 Waking a sleeping tab takes a moment, so it starts before the click: when the pointer enters a tab in the strip, the controls WebView posts `MG_WAKE_TAB`, and `Tab::Wake` resumes the tab and gives it its memory back. If it isn't clicked, it is trimmed again 30 seconds later.
 
 The options dropdown, hidden most of the time, keeps its memory low while it is hidden too.
+
+### Blocking trackers
+
+Chromium runs each site in a renderer process of its own, and that includes the frames a page embeds from other sites. On news sites most of those frames are ad and tracker frames, each site in its own process: loading eight common sites (Wikipedia, GitHub, YouTube, Reddit, BBC, The Verge, Stack Overflow, CNN) made 83 such frames and 39 renderer processes. `Tab::SetTrackingPrevention` sets the tabs' profile to [Strict tracking prevention](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2profile3#put_preferredtrackingpreventionlevel), as Edge offers it, which blocks most of them: the same sites then make 4 such frames and 13 renderers, and take about 1 GB less committed memory. Pages draw less too. As in Edge, a site that needs a blocked tracker may lose that part of the page.
 
 ### Updating the security icon
 

@@ -50,4 +50,5 @@ protected:
 
     HRESULT Init(ICoreWebView2Environment* env, bool shouldBeActive);
     void SetMessageBroker();
+    void SetTrackingPrevention();
 };

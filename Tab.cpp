@@ -79,6 +79,8 @@ HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive)
             return S_OK;
         }).Get(), &m_securityUpdateToken));
 
+        SetTrackingPrevention();
+
         RETURN_IF_FAILED(m_contentWebView->Navigate(L"https://www.bing.com"));
         browserWindow->HandleTabCreated(m_tabId, shouldBeActive);
 
@@ -96,6 +98,22 @@ void Tab::SetMessageBroker()
 
         return S_OK;
     });
+}
+
+// Pages load ad and tracker frames from many sites, each in a renderer
+// process of its own: on news sites they take more memory than the page.
+// Strict tracking prevention, as in Edge, blocks most of them. Runtimes
+// before 115 keep the default, Balanced.
+void Tab::SetTrackingPrevention()
+{
+    ComPtr<ICoreWebView2_13> webview13;
+    ComPtr<ICoreWebView2Profile> profile;
+    ComPtr<ICoreWebView2Profile3> profile3;
+    if (SUCCEEDED(m_contentWebView.As(&webview13)) && SUCCEEDED(webview13->get_Profile(&profile))
+        && SUCCEEDED(profile.As(&profile3)))
+    {
+        profile3->put_PreferredTrackingPreventionLevel(COREWEBVIEW2_TRACKING_PREVENTION_LEVEL_STRICT);
+    }
 }
 
 Tab::~Tab()
