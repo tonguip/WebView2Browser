@@ -98,6 +98,115 @@ void Tab::SetMessageBroker()
     });
 }
 
+Tab::~Tab()
+{
+    KillTimer(m_parentHWnd, m_tabId);
+}
+
+// Shows or hides the tab. Once hidden for c_trimAfterMs, WebView2 keeps its
+// memory low, as Edge does for background tabs, and c_suspendAfterMs later
+// suspends it, like a sleeping tab. Its timer is named by the tab ID and
+// arrives as WM_TIMER in BrowserWindow.
+HRESULT Tab::SetVisible(bool visible)
+{
+    RETURN_IF_FAILED(m_contentController->put_IsVisible(visible));
+
+    if (visible)
+    {
+        KillTimer(m_parentHWnd, m_tabId);
+        // WebView2 resumes a suspended tab as it shows.
+        if (*m_memory == Memory::Low || *m_memory == Memory::Suspended)
+        {
+            BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
+        }
+        *m_memory = Memory::Normal;
+    }
+    else if (*m_memory == Memory::Normal)
+    {
+        *m_memory = Memory::Hidden;
+        SetTimer(m_parentHWnd, m_tabId, c_trimAfterMs, nullptr);
+    }
+
+    return S_OK;
+}
+
+// The tab is likely to show soon, e.g. the pointer is on it in the tab strip:
+// it gets its memory back and resumes now rather than as it shows. It is
+// trimmed again if it stays hidden.
+void Tab::Wake()
+{
+    if (*m_memory != Memory::Low && *m_memory != Memory::Suspended)
+    {
+        return;
+    }
+
+    // Also for a TrySuspend still under way.
+    ComPtr<ICoreWebView2_3> webview3;
+    if (SUCCEEDED(m_contentWebView.As(&webview3)))
+    {
+        webview3->Resume();
+    }
+    BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
+    *m_memory = Memory::Hidden;
+    SetTimer(m_parentHWnd, m_tabId, c_trimAfterMs, nullptr);
+}
+
+void Tab::OnHiddenTimer()
+{
+    KillTimer(m_parentHWnd, m_tabId);
+
+    if (*m_memory == Memory::Hidden)
+    {
+        // A page playing sound keeps its memory, and is looked at again later.
+        ComPtr<ICoreWebView2_8> webview8;
+        BOOL playing = FALSE;
+        if (SUCCEEDED(m_contentWebView.As(&webview8)))
+        {
+            webview8->get_IsDocumentPlayingAudio(&playing);
+        }
+        if (playing)
+        {
+            SetTimer(m_parentHWnd, m_tabId, c_trimAfterMs, nullptr);
+            return;
+        }
+
+        BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
+        *m_memory = Memory::Low;
+        SetTimer(m_parentHWnd, m_tabId, c_suspendAfterMs, nullptr);
+    }
+    else if (*m_memory == Memory::Low)
+    {
+        ComPtr<ICoreWebView2_3> webview3;
+        if (FAILED(m_contentWebView.As(&webview3)))
+        {
+            return;
+        }
+
+        // A page WebView2 won't suspend (a call, a camera) is asked again later.
+        std::weak_ptr<Memory> memory = m_memory;
+        HWND hWnd = m_parentHWnd;
+        size_t tabId = m_tabId;
+        webview3->TrySuspend(Callback<ICoreWebView2TrySuspendCompletedHandler>(
+            [memory, hWnd, tabId](HRESULT errorCode, BOOL isSuccessful) -> HRESULT
+        {
+            std::shared_ptr<Memory> state = memory.lock();
+            // Unless the tab closed or showed meanwhile.
+            if (state && *state == Memory::Low)
+            {
+                if (SUCCEEDED(errorCode) && isSuccessful)
+                {
+                    *state = Memory::Suspended;
+                }
+                else
+                {
+                    SetTimer(hWnd, tabId, c_suspendAfterMs, nullptr);
+                }
+            }
+            return S_OK;
+        }).Get());
+    }
+}
+
 HRESULT Tab::ResizeWebView()
 {
     RECT bounds;

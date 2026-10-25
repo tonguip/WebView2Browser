@@ -25,5 +25,6 @@ const commands = {
     MG_CLEAR_COOKIES: 25,
     MG_GET_HISTORY: 26,
     MG_REMOVE_HISTORY_ITEM: 27,
-    MG_CLEAR_HISTORY: 28
+    MG_CLEAR_HISTORY: 28,
+    MG_WAKE_TAB: 29
 };

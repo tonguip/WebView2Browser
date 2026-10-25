@@ -30,7 +30,14 @@ public:
     HRESULT HandleTabMessageReceived(size_t tabId, ICoreWebView2* webview, ICoreWebView2WebMessageReceivedEventArgs* eventArgs);
     int GetDPIAwareBound(int bound);
     static void CheckFailure(HRESULT hr, LPCWSTR errorMessage);
+    static void SetMemoryUsage(ICoreWebView2* webview, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL level);
 protected:
+    // The browser UI's WebView2 profile: its own data, in the tabs' browser
+    // process.
+    static constexpr LPCWSTR c_uiProfileName = L"BrowserUI";
+    // Where WebView2 keeps that profile's data in the user data folder.
+    static constexpr LPCWSTR c_uiProfileFolder = L"EBWebView\\WV2Profile_browserui";
+
     HINSTANCE m_hInst = nullptr;  // Current app instance
     HWND m_hWnd = nullptr;
 
@@ -40,8 +47,7 @@ protected:
     int m_minWindowWidth = 0;
     int m_minWindowHeight = 0;
 
-    Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_uiEnv;
-    Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_contentEnv;
+    Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_env;
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> m_controlsController;
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> m_optionsController;
     Microsoft::WRL::ComPtr<ICoreWebView2> m_controlsWebView;
@@ -58,6 +64,9 @@ protected:
 
     BOOL InitInstance(HINSTANCE hInstance, int nCmdShow);
     HRESULT InitUIWebViews();
+    HRESULT CreateUIController(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler* handler);
+    void MoveBrowserUIData(const std::wstring& userDataDirectory);
+    static std::wstring GetBrowserArguments();
     HRESULT CreateBrowserControlsWebView();
     HRESULT CreateBrowserOptionsWebView();
     HRESULT ClearContentCache();

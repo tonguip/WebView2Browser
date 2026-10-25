@@ -4,8 +4,12 @@
 
 #include "BrowserWindow.h"
 #include "shlobj.h"
+#include "WebView2EnvironmentOptions.h"
+#include <dxgi1_6.h>
+#include <filesystem>
 #include <Urlmon.h>
 #pragma comment (lib, "Urlmon.lib")
+#pragma comment (lib, "dxgi.lib")
 
 using namespace Microsoft::WRL;
 
@@ -109,6 +113,20 @@ LRESULT CALLBACK BrowserWindow::WndProc(HWND hWnd, UINT message, WPARAM wParam, 
         CheckFailure(PostJsonToWebView(jsonObj, m_controlsWebView.Get()), L"Try again.");
     }
     break;
+    case WM_TIMER:
+    {
+        // A hidden tab's timer, named by its ID, see Tab::SetVisible.
+        auto tab = m_tabs.find(wParam);
+        if (tab != m_tabs.end())
+        {
+            tab->second->OnHiddenTimer();
+        }
+        else
+        {
+            KillTimer(hWnd, wParam);
+        }
+    }
+    break;
     case WM_NCDESTROY:
     {
         SetWindowLongPtr(hWnd, GWLP_USERDATA, NULL);
@@ -177,22 +195,30 @@ BOOL BrowserWindow::InitInstance(HINSTANCE hInstance, int nCmdShow)
     ShowWindow(m_hWnd, nCmdShow);
     UpdateWindow(m_hWnd);
 
-    // Get directory for user data. This will be kept separated from the
-    // directory for the browser UI data.
+    // Get directory for user data. The browser UI keeps its data apart from
+    // the tabs' in a profile of its own (c_uiProfileName).
     std::wstring userDataDirectory = GetAppDataDirectory();
     userDataDirectory.append(L"\\User Data");
+    MoveBrowserUIData(userDataDirectory);
 
-    // Create WebView environment for web content requested by the user. All
-    // tabs will be created from this environment and kept isolated from the
-    // browser UI. This enviroment is created first so the UI can request new
-    // tabs when it's ready.
+    auto options = Make<CoreWebView2EnvironmentOptions>();
+    std::wstring browserArguments = GetBrowserArguments();
+    if (!browserArguments.empty())
+    {
+        options->put_AdditionalBrowserArguments(browserArguments.c_str());
+    }
+
+    // Create the WebView environment for both the tabs and the browser UI:
+    // one browser process, GPU process and network service for all of them,
+    // where a second environment for the UI would start a second set. It is
+    // created first so the UI can request new tabs when it's ready.
     HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(nullptr, userDataDirectory.c_str(),
-        nullptr, Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+        options.Get(), Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
             [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT
     {
         RETURN_IF_FAILED(result);
 
-        m_contentEnv = env;
+        m_env = env;
         HRESULT hr = InitUIWebViews();
 
         if (!SUCCEEDED(hr))
@@ -214,29 +240,94 @@ BOOL BrowserWindow::InitInstance(HINSTANCE hInstance, int nCmdShow)
 
 HRESULT BrowserWindow::InitUIWebViews()
 {
-    // Get data directory for browser UI data
-    std::wstring browserDataDirectory = GetAppDataDirectory();
-    browserDataDirectory.append(L"\\Browser Data");
+    RETURN_IF_FAILED(CreateBrowserControlsWebView());
+    RETURN_IF_FAILED(CreateBrowserOptionsWebView());
 
-    // Create WebView environment for browser UI. A separate data directory is
-    // used to isolate the browser UI from web content requested by the user.
-    return CreateCoreWebView2EnvironmentWithOptions(nullptr, browserDataDirectory.c_str(),
-        nullptr, Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-            [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT
+    return S_OK;
+}
+
+// Creates a WebView for the browser UI, in the UI's profile so its data stays
+// isolated from web content requested by the user. Runtimes before profiles
+// (101) put it in the tabs' profile.
+HRESULT BrowserWindow::CreateUIController(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler* handler)
+{
+    ComPtr<ICoreWebView2Environment10> env10;
+    if (FAILED(m_env.As(&env10)))
     {
-        // Environment is ready, create the WebView
-        m_uiEnv = env;
+        return m_env->CreateCoreWebView2Controller(m_hWnd, handler);
+    }
 
-        RETURN_IF_FAILED(CreateBrowserControlsWebView());
-        RETURN_IF_FAILED(CreateBrowserOptionsWebView());
+    wil::com_ptr<ICoreWebView2ControllerOptions> options;
+    RETURN_IF_FAILED(env10->CreateCoreWebView2ControllerOptions(&options));
+    RETURN_IF_FAILED(options->put_ProfileName(c_uiProfileName));
 
-        return S_OK;
-    }).Get());
+    return env10->CreateCoreWebView2ControllerWithOptions(m_hWnd, options.get(), handler);
+}
+
+// The browser UI used to run in a second environment with its data, the
+// favorites and history in IndexedDB, in "Browser Data". It now has a profile
+// in the tabs' environment, and its data moves there once.
+void BrowserWindow::MoveBrowserUIData(const std::wstring& userDataDirectory)
+{
+    namespace fs = std::filesystem;
+    std::error_code error;
+
+    fs::path oldIndexedDB = fs::path(GetAppDataDirectory()) / L"Browser Data" / L"EBWebView" / L"Default" / L"IndexedDB";
+    fs::path profile = fs::path(userDataDirectory) / c_uiProfileFolder;
+    if (!fs::exists(oldIndexedDB, error) || fs::exists(profile, error))
+    {
+        return;
+    }
+
+    fs::create_directories(profile, error);
+    fs::copy(oldIndexedDB, profile / L"IndexedDB", fs::copy_options::recursive, error);
+}
+
+// Chromium draws on the GPU Windows gives it. Where a discrete GPU (NVIDIA or
+// AMD) is there, beside an integrated one or alone, it is asked for the high
+// performance one, which with a single GPU is that GPU anyway.
+std::wstring BrowserWindow::GetBrowserArguments()
+{
+    ComPtr<IDXGIFactory6> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+    {
+        return L"";
+    }
+
+    ComPtr<IDXGIAdapter1> adapter;
+    for (UINT i = 0; factory->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+        IID_PPV_ARGS(&adapter)) != DXGI_ERROR_NOT_FOUND; i++)
+    {
+        DXGI_ADAPTER_DESC1 desc;
+        if (FAILED(adapter->GetDesc1(&desc)) || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+        {
+            continue;
+        }
+
+        const UINT nvidia = 0x10DE;
+        const UINT amd = 0x1002;
+        if (desc.VendorId == nvidia || desc.VendorId == amd)
+        {
+            return L"--force-high-performance-gpu";
+        }
+    }
+
+    return L"";
+}
+
+void BrowserWindow::SetMemoryUsage(ICoreWebView2* webview, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL level)
+{
+    // Runtimes before 114 keep it all.
+    ComPtr<ICoreWebView2_19> webview19;
+    if (webview && SUCCEEDED(webview->QueryInterface(IID_PPV_ARGS(&webview19))))
+    {
+        webview19->put_MemoryUsageTargetLevel(level);
+    }
 }
 
 HRESULT BrowserWindow::CreateBrowserControlsWebView()
 {
-    return m_uiEnv->CreateCoreWebView2Controller(m_hWnd, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+    return CreateUIController(Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
         [this](HRESULT result, ICoreWebView2Controller* host) -> HRESULT
     {
         if (!SUCCEEDED(result))
@@ -272,7 +363,7 @@ HRESULT BrowserWindow::CreateBrowserControlsWebView()
 
 HRESULT BrowserWindow::CreateBrowserOptionsWebView()
 {
-    return m_uiEnv->CreateCoreWebView2Controller(m_hWnd, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+    return CreateUIController(Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
         [this](HRESULT result, ICoreWebView2Controller* host) -> HRESULT
     {
         if (!SUCCEEDED(result))
@@ -296,8 +387,9 @@ HRESULT BrowserWindow::CreateBrowserOptionsWebView()
         }
         ).Get(), &m_optionsZoomToken));
 
-        // Hide by default
+        // Hide by default, keeping little memory until it shows
         RETURN_IF_FAILED(m_optionsController->put_IsVisible(FALSE));
+        SetMemoryUsage(m_optionsWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
         RETURN_IF_FAILED(m_optionsWebView->add_WebMessageReceived(m_uiMessageBroker.Get(), &m_optionsUIMessageBrokerToken));
 
         // Hide menu when focus is lost
@@ -354,7 +446,7 @@ void BrowserWindow::SetUIMessageBroker()
         {
             size_t id = args.at(L"tabId").as_number().to_uint32();
             bool shouldBeActive = args.at(L"active").as_bool();
-            std::unique_ptr<Tab> newTab = Tab::CreateNewTab(m_hWnd, m_contentEnv.Get(), id, shouldBeActive);
+            std::unique_ptr<Tab> newTab = Tab::CreateNewTab(m_hWnd, m_env.Get(), id, shouldBeActive);
 
             std::map<size_t, std::unique_ptr<Tab>>::iterator it = m_tabs.find(id);
             if (it == m_tabs.end())
@@ -425,6 +517,16 @@ void BrowserWindow::SetUIMessageBroker()
             SwitchToTab(tabId);
         }
         break;
+        case MG_WAKE_TAB:
+        {
+            size_t tabId = args.at(L"tabId").as_number().to_uint32();
+            auto tab = m_tabs.find(tabId);
+            if (tab != m_tabs.end() && tab->second->m_contentWebView)
+            {
+                tab->second->Wake();
+            }
+        }
+        break;
         case MG_CLOSE_TAB:
         {
             size_t id = args.at(L"tabId").as_number().to_uint32();
@@ -439,6 +541,7 @@ void BrowserWindow::SetUIMessageBroker()
         break;
         case MG_SHOW_OPTIONS:
         {
+            SetMemoryUsage(m_optionsWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
             CheckFailure(m_optionsController->put_IsVisible(TRUE), L"");
             m_optionsController->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
         }
@@ -446,6 +549,7 @@ void BrowserWindow::SetUIMessageBroker()
         case MG_HIDE_OPTIONS:
         {
             CheckFailure(m_optionsController->put_IsVisible(FALSE), L"Something went wrong when trying to close the options dropdown.");
+            SetMemoryUsage(m_optionsWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
         }
         break;
         case MG_OPTION_SELECTED:
@@ -480,7 +584,7 @@ HRESULT BrowserWindow::SwitchToTab(size_t tabId)
     size_t previousActiveTab = m_activeTabId;
 
     RETURN_IF_FAILED(m_tabs.at(tabId)->ResizeWebView());
-    RETURN_IF_FAILED(m_tabs.at(tabId)->m_contentController->put_IsVisible(TRUE));
+    RETURN_IF_FAILED(m_tabs.at(tabId)->SetVisible(true));
     m_activeTabId = tabId;
 
     if (previousActiveTab != INVALID_TAB_ID && previousActiveTab != m_activeTabId) {
@@ -488,7 +592,7 @@ HRESULT BrowserWindow::SwitchToTab(size_t tabId)
         if (previousTabIterator != m_tabs.end() && previousTabIterator->second &&
             previousTabIterator->second->m_contentController)
         {
-            auto hr = m_tabs.at(previousActiveTab)->m_contentController->put_IsVisible(FALSE);
+            auto hr = m_tabs.at(previousActiveTab)->SetVisible(false);
             if (hr == HRESULT_FROM_WIN32(ERROR_INVALID_STATE)) {
                 web::json::value jsonObj = web::json::value::parse(L"{}");
                 jsonObj[L"message"] = web::json::value(MG_CLOSE_TAB);

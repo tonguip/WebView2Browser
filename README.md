@@ -20,7 +20,7 @@ A web browser built with the [Microsoft Edge WebView2](https://aka.ms/webview2) 
 
 WebView2Browser is a sample Windows desktop application demonstrating the WebView2 control capabilities. It is built as a Win32 [Visual Studio 2019](https://visualstudio.microsoft.com/vs/) project and makes use of both C++ and JavaScript in the WebView2 environment to power its features.
 
-WebView2Browser shows some of the simplest uses of WebView2 -such as creating and navigating a WebView, but also some more complex workflows like using the [PostWebMessageAsJson API](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2#postwebmessageasjson) to communicate WebViews in separate environments. It is intended as a rich code sample to look at how you can use WebView2 APIs to build your own app.
+WebView2Browser shows some of the simplest uses of WebView2 -such as creating and navigating a WebView, but also some more complex workflows like using the [PostWebMessageAsJson API](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2#postwebmessageasjson) to communicate WebViews in separate profiles. It is intended as a rich code sample to look at how you can use WebView2 APIs to build your own app.
 
 For more information, see the article in the Microsoft Edge Developer documentation: [WebView2Browser](https://learn.microsoft.com/microsoft-edge/webview2/samples/webview2browser).
 
@@ -86,7 +86,7 @@ int BrowserWindow::GetDPIAwareBound(int bound)
 
 WebView2Browser has a multi-WebView approach to integrate web content and application UI into a Windows Desktop application. This allows the browser to use standard web technologies (HTML, CSS, JavaScript) to light up the interface but also enables the app to fetch favicons from the web and use IndexedDB for storing favorites and history.
 
-The multi-WebView approach involves using two separate WebView environments (each with its own user data directory): one for the UI WebViews and the other for all content WebViews. UI WebViews (controls and options dropdown) use the UI environment while web content WebViews (one per tab) use the content environment.
+The multi-WebView approach uses one WebView environment with two profiles: UI WebViews (controls and options dropdown) use the `BrowserUI` profile, while web content WebViews (one per tab) use the default profile. Each profile keeps its own cookies, cache and storage, so the UI stays isolated from web content, but all WebViews share one browser process, GPU process and network service. (Earlier versions used a second environment for the UI, which started a second set of those processes; the UI's favorites and history move to the new profile on first run.)
 
 ![Browser layout](https://raw.githubusercontent.com/MicrosoftEdge/WebView2Browser/master/screenshots/layout.png)
 
@@ -110,7 +110,8 @@ WebView2Browser makes use of a handful of the APIs available in WebView2. For th
 
 API | Feature(s)
 :--- | :---
-CreateCoreWebView2EnvironmentWithOptions | Used to create the environments for UI and content WebViews. Different user data directories are passed to isolate UI from web content. |
+CreateCoreWebView2EnvironmentWithOptions | Used to create the one environment for UI and content WebViews, asking for the high performance GPU when a discrete one is installed. |
+ICoreWebView2ControllerOptions | Used with CreateCoreWebView2ControllerWithOptions to put the UI WebViews in a profile of their own, isolated from web content. |
 ICoreWebView2 | There are several WebViews in WebView2Browser and most features make use of members in this interface, the table below shows how they're used.
 ICoreWebView2DevToolsProtocolEventReceivedEventHandler | Used along with add_DevToolsProtocolEventReceived to listen for CDP security events to update the lock icon in the browser UI. |
 ICoreWebView2DevToolsProtocolEventReceiver | Used along with add_DevToolsProtocolEventReceived to listen for CDP security events to update the lock icon in the browser UI. |
@@ -133,6 +134,8 @@ ExecuteScript | Used to get the title and favicon of a visited page.
 PostWebMessageAsJson | Used to communicate WebViews. All messages use JSON to pass parameters needed.
 add_WebMessageReceived | Used to handle web messages posted to the WebView.
 CallDevToolsProtocolMethod | Used to enable listening for security events, which will notify of security status changes in a document.
+put_MemoryUsageTargetLevel | Used to keep the memory of hidden tabs and the hidden options dropdown low.
+TrySuspend | Used to suspend tabs that have been hidden for five minutes.
 
 ICoreWebView2Controller API | Feature(s)
 :--- | :---
@@ -151,6 +154,7 @@ The sections below describe how some of the features in WebView2Browser were imp
 * [Some interesting features](#some-interesting-features)
   * [Communicating the WebViews](#communicating-the-webviews)
   * [Tab handling](#tab-handling)
+  * [Keeping hidden tabs light](#keeping-hidden-tabs-light)
   * [Updating the security icon](#updating-the-security-icon)
   * [Populating the history](#populating-the-history)
 * [Handling JSON and URIs](#handling-json-and-uris)
@@ -159,25 +163,35 @@ The sections below describe how some of the features in WebView2Browser were imp
 
 ### Set up the environment, create a WebView
 
-WebView2 allows you to host web content in your Windows app. It exposes the globals [CreateCoreWebView2Environment](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/webview2-idl#createcorewebview2environment) and [CreateCoreWebView2EnvironmentWithOptions](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/webview2-idl#createcorewebview2environmentwithoptions) from which we can create the two separate environments for the browser's UI and content.
+WebView2 allows you to host web content in your Windows app. It exposes the globals [CreateCoreWebView2Environment](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/webview2-idl#createcorewebview2environment) and [CreateCoreWebView2EnvironmentWithOptions](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/webview2-idl#createcorewebview2environmentwithoptions) from which we create the one environment for the browser's UI and content.
+
+When a discrete GPU (NVIDIA or AMD) is installed, `GetBrowserArguments` finds it with DXGI and passes `--force-high-performance-gpu`, so on a laptop with an integrated GPU as well, Chromium draws pages on the discrete one.
 
 ```cpp
-    // Get directory for user data. This will be kept separated from the
-    // directory for the browser UI data.
+    // Get directory for user data. The browser UI keeps its data apart from
+    // the tabs' in a profile of its own (c_uiProfileName).
     std::wstring userDataDirectory = GetAppDataDirectory();
     userDataDirectory.append(L"\\User Data");
+    MoveBrowserUIData(userDataDirectory);
 
-    // Create WebView environment for web content requested by the user. All
-    // tabs will be created from this environment and kept isolated from the
-    // browser UI. This environment is created first so the UI can request new
-    // tabs when it's ready.
+    auto options = Make<CoreWebView2EnvironmentOptions>();
+    std::wstring browserArguments = GetBrowserArguments();
+    if (!browserArguments.empty())
+    {
+        options->put_AdditionalBrowserArguments(browserArguments.c_str());
+    }
+
+    // Create the WebView environment for both the tabs and the browser UI:
+    // one browser process, GPU process and network service for all of them,
+    // where a second environment for the UI would start a second set. It is
+    // created first so the UI can request new tabs when it's ready.
     HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(nullptr, userDataDirectory.c_str(),
-        L"", Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+        options.Get(), Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
             [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT
     {
         RETURN_IF_FAILED(result);
 
-        m_contentEnv = env;
+        m_env = env;
         HRESULT hr = InitUIWebViews();
 
         if (!SUCCEEDED(hr))
@@ -189,27 +203,22 @@ WebView2 allows you to host web content in your Windows app. It exposes the glob
     }).Get());
 ```
 
+The UI WebViews are created in their own profile:
+
 ```cpp
-HRESULT BrowserWindow::InitUIWebViews()
+HRESULT BrowserWindow::CreateUIController(ICoreWebView2CreateCoreWebView2ControllerCompletedHandler* handler)
 {
-    // Get data directory for browser UI data
-    std::wstring browserDataDirectory = GetAppDataDirectory();
-    browserDataDirectory.append(L"\\Browser Data");
-
-    // Create WebView environment for browser UI. A separate data directory is
-    // used to isolate the browser UI from web content requested by the user.
-    return CreateCoreWebView2EnvironmentWithOptions(nullptr, browserDataDirectory.c_str(),
-        L"", Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-            [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT
+    ComPtr<ICoreWebView2Environment10> env10;
+    if (FAILED(m_env.As(&env10)))
     {
-        // Environment is ready, create the WebView
-        m_uiEnv = env;
+        return m_env->CreateCoreWebView2Controller(m_hWnd, handler);
+    }
 
-        RETURN_IF_FAILED(CreateBrowserControlsWebView());
-        RETURN_IF_FAILED(CreateBrowserOptionsWebView());
+    wil::com_ptr<ICoreWebView2ControllerOptions> options;
+    RETURN_IF_FAILED(env10->CreateCoreWebView2ControllerOptions(&options));
+    RETURN_IF_FAILED(options->put_ProfileName(c_uiProfileName));
 
-        return S_OK;
-    }).Get());
+    return env10->CreateCoreWebView2ControllerWithOptions(m_hWnd, options.get(), handler);
 }
 ```
 
@@ -218,7 +227,7 @@ We use the [ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler](https://
 ```cpp
 HRESULT BrowserWindow::CreateBrowserControlsWebView()
 {
-    return m_uiEnv->CreateCoreWebView2Controller(m_hWnd, Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+    return CreateUIController(Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
         [this](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT
     {
         if (!SUCCEEDED(result))
@@ -659,17 +668,50 @@ HRESULT BrowserWindow::SwitchToTab(size_t tabId)
     size_t previousActiveTab = m_activeTabId;
 
     RETURN_IF_FAILED(m_tabs.at(tabId)->ResizeWebView());
-    RETURN_IF_FAILED(m_tabs.at(tabId)->m_contentWebView->put_IsVisible(TRUE));
+    RETURN_IF_FAILED(m_tabs.at(tabId)->SetVisible(true));
     m_activeTabId = tabId;
 
     if (previousActiveTab != INVALID_TAB_ID && previousActiveTab != m_activeTabId)
     {
-        RETURN_IF_FAILED(m_tabs.at(previousActiveTab)->m_contentWebView->put_IsVisible(FALSE));
+        RETURN_IF_FAILED(m_tabs.at(previousActiveTab)->SetVisible(false));
     }
 
     return S_OK;
 }
 ```
+
+### Keeping hidden tabs light
+
+`Tab::SetVisible` shows or hides the tab's WebView and, as Edge does for background tabs, lowers what a hidden tab keeps in memory in two steps. A tab hidden for 30 seconds gets [MemoryUsageTargetLevel](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2_19#put_memoryusagetargetlevel) `LOW`: Chromium frees the page's caches and garbage and lets Windows page out the rest. Five minutes after it was hidden, it is suspended with [TrySuspend](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2_3#trysuspend), which pauses its scripts, timers and animations like a sleeping tab. Showing it again sets the level back to `NORMAL`, and WebView2 resumes a suspended WebView as it becomes visible. A tab playing sound keeps its memory, and WebView2 refuses to suspend pages that can't sleep (a call, a camera), which are asked again later. The timers are window timers named by the tab ID, handled as `WM_TIMER` in `BrowserWindow`.
+
+```cpp
+HRESULT Tab::SetVisible(bool visible)
+{
+    RETURN_IF_FAILED(m_contentController->put_IsVisible(visible));
+
+    if (visible)
+    {
+        KillTimer(m_parentHWnd, m_tabId);
+        // WebView2 resumes a suspended tab as it shows.
+        if (*m_memory == Memory::Low || *m_memory == Memory::Suspended)
+        {
+            BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
+        }
+        *m_memory = Memory::Normal;
+    }
+    else if (*m_memory == Memory::Normal)
+    {
+        *m_memory = Memory::Hidden;
+        SetTimer(m_parentHWnd, m_tabId, c_trimAfterMs, nullptr);
+    }
+
+    return S_OK;
+}
+```
+
+Waking a sleeping tab takes a moment, so it starts before the click: when the pointer enters a tab in the strip, the controls WebView posts `MG_WAKE_TAB`, and `Tab::Wake` resumes the tab and gives it its memory back. If it isn't clicked, it is trimmed again 30 seconds later.
+
+The options dropdown, hidden most of the time, keeps its memory low while it is hidden too.
 
 ### Updating the security icon
 

@@ -440,6 +440,21 @@ function loadTabUI(tabId) {
                 switchToTab(tabId, true);
             }
         });
+
+        // The pointer on a tab is likely to click it: a tab hidden long
+        // enough to sleep starts waking now, so it is ready to show
+        tabElement.addEventListener('mouseenter', function(e) {
+            if (tabId != activeTabId) {
+                var message = {
+                    message: commands.MG_WAKE_TAB,
+                    args: {
+                        tabId: tabId
+                    }
+                };
+
+                window.chrome.webview.postMessage(message);
+            }
+        });
     }
 }
 
