@@ -136,6 +136,7 @@ Stop | Used to cancel a navigation.
 add_ServerCertificateErrorDetected | Used to show pages of a host with a certificate error as not secure.
 put_MemoryUsageTargetLevel | Used to keep the memory of hidden tabs and the hidden options dropdown low.
 TrySuspend | Used to suspend tabs that have been hidden for five minutes.
+add_ProcessFailed | Used to load a tab's page again when its renderer process ends.
 get_Profile | Used with ICoreWebView2Profile3::put_PreferredTrackingPreventionLevel to block most trackers in tabs, and with ICoreWebView2Profile2::ClearBrowsingData to clear the cache and cookies.
 
 ICoreWebView2Controller API | Feature(s)
@@ -158,6 +159,7 @@ The sections below describe how some of the features in WebView2Browser were imp
   * [Keeping hidden tabs light](#keeping-hidden-tabs-light)
   * [Blocking trackers](#blocking-trackers)
   * [Sharing renderer processes](#sharing-renderer-processes)
+  * [Recovering from a renderer crash](#recovering-from-a-renderer-crash)
   * [Updating the security icon](#updating-the-security-icon)
   * [Populating the history](#populating-the-history)
 * [Handling JSON and URIs](#handling-json-and-uris)
@@ -699,6 +701,11 @@ HRESULT Tab::SetVisible(bool visible)
             BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
         }
         *m_memory = Memory::Normal;
+
+        if (m_reloadWhenShown)
+        {
+            ReloadAfterCrash();
+        }
     }
     else if (*m_memory == Memory::Normal)
     {
@@ -725,6 +732,34 @@ Chromium runs each site in a renderer process of its own, and that includes the 
 Chromium runs every tab in a renderer process of its own, however many tabs there are. Chrome puts up to two tabs of one site in a process, but that doesn't happen in WebView2, so ten tabs on four sites took ten renderers, each with its own copy of the engine. `GetBrowserArguments` passes `--renderer-process-limit=8` (`c_rendererProcessLimit`, the browser UI's two WebViews included): once there are eight renderers, a new tab or frame goes into an existing process of its site, while a new site still gets a process of its own. Sites stay isolated from each other.
 
 Below the limit, every tab keeps its process, so a background tab busy with scripts can't slow the tab in front. Above it, it can if they are of one site, until the background tab goes to sleep (see [Keeping hidden tabs light](#keeping-hidden-tabs-light)). Ten tabs on Wikipedia, GitHub, Reddit and Stack Overflow, switched every 3 seconds: 14 renderers and 402-409 MB private working set without the limit, 10 renderers and 352 MB with it, peaking at 414 MB rather than 538-565. Switching tabs and the first scroll take as long, and a new tab of a site already open can load faster, its process being up already.
+
+### Recovering from a renderer crash
+
+When a tab's renderer process ends, because it crashed, ran out of memory or was ended from outside, the page is gone until the tab is reloaded. Once tabs of a site share a process, that takes several tabs at once. WebView2 raises `ProcessFailed` with `COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED` for each, and `Tab::OnRendererExited` loads the page again: the tab in front at once, a hidden tab when it is shown, so that the tabs of a crashed process don't all load in the background together. If the page in front ends its renderer again within 30 seconds of being loaded again, it is left for the user to reload, as the page itself is then likely the cause.
+
+```cpp
+void Tab::OnRendererExited()
+{
+    BOOL visible = FALSE;
+    m_contentController->get_IsVisible(&visible);
+    if (!visible)
+    {
+        m_reloadWhenShown = true;
+        return;
+    }
+
+    // It ended again soon after it was loaded again in front: the page may
+    // well be what ends it, and it's left for the user to reload. A hidden
+    // tab is loaded again in any case, as the tab in front sharing its
+    // process is the likelier cause.
+    if (m_reloadedAfterCrashAt && GetTickCount64() - m_reloadedAfterCrashAt < c_crashLoopMs)
+    {
+        return;
+    }
+
+    ReloadAfterCrash();
+}
+```
 
 ### Updating the security icon
 

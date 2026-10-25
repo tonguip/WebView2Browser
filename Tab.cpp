@@ -82,6 +82,18 @@ HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive)
             }).Get(), &m_certificateErrorToken));
         }
 
+        RETURN_IF_FAILED(m_contentWebView->add_ProcessFailed(Callback<ICoreWebView2ProcessFailedEventHandler>(
+            [this](ICoreWebView2* webview, ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT
+        {
+            COREWEBVIEW2_PROCESS_FAILED_KIND kind;
+            RETURN_IF_FAILED(args->get_ProcessFailedKind(&kind));
+            if (kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED)
+            {
+                OnRendererExited();
+            }
+            return S_OK;
+        }).Get(), &m_processFailedToken));
+
         SetTrackingPrevention();
 
         // A new tab shows a page of the browser's own, which loads at once
@@ -150,6 +162,11 @@ HRESULT Tab::SetVisible(bool visible)
             BrowserWindow::SetMemoryUsage(m_contentWebView.Get(), COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
         }
         *m_memory = Memory::Normal;
+
+        if (m_reloadWhenShown)
+        {
+            ReloadAfterCrash();
+        }
     }
     else if (*m_memory == Memory::Normal)
     {
@@ -184,6 +201,12 @@ void Tab::Wake()
 void Tab::OnHiddenTimer()
 {
     KillTimer(m_parentHWnd, m_tabId);
+
+    // Its renderer ended: there's no page to trim until it shows.
+    if (m_reloadWhenShown)
+    {
+        return;
+    }
 
     if (*m_memory == Memory::Hidden)
     {
@@ -243,6 +266,40 @@ void Tab::OnHiddenTimer()
             return S_OK;
         }).Get());
     }
+}
+
+// The tab's renderer process ended: it crashed, ran out of memory or was
+// ended from outside, and the page is gone. Once there are enough renderers
+// that tabs of a site share one (see BrowserWindow::GetBrowserArguments), each
+// of those tabs gets this. The tab in front loads its page again now, a hidden
+// one as it shows, so they don't all load at once in the background.
+void Tab::OnRendererExited()
+{
+    BOOL visible = FALSE;
+    m_contentController->get_IsVisible(&visible);
+    if (!visible)
+    {
+        m_reloadWhenShown = true;
+        return;
+    }
+
+    // It ended again soon after it was loaded again in front: the page may
+    // well be what ends it, and it's left for the user to reload. A hidden
+    // tab is loaded again in any case, as the tab in front sharing its
+    // process is the likelier cause.
+    if (m_reloadedAfterCrashAt && GetTickCount64() - m_reloadedAfterCrashAt < c_crashLoopMs)
+    {
+        return;
+    }
+
+    ReloadAfterCrash();
+}
+
+void Tab::ReloadAfterCrash()
+{
+    m_reloadWhenShown = false;
+    m_reloadedAfterCrashAt = GetTickCount64();
+    m_contentWebView->Reload();
 }
 
 HRESULT Tab::ResizeWebView()

@@ -44,6 +44,13 @@ protected:
     // Shared with a pending TrySuspend, which may finish after the tab closed.
     std::shared_ptr<Memory> m_memory = std::make_shared<Memory>(Memory::Normal);
 
+    // A page in front whose renderer ends again this soon after it was loaded
+    // again for the last crash isn't loaded again: the user can reload it.
+    static const ULONGLONG c_crashLoopMs = 30 * 1000;
+    // The renderer ended while the tab was hidden: it loads as it shows.
+    bool m_reloadWhenShown = false;
+    ULONGLONG m_reloadedAfterCrashAt = 0;
+
     HWND m_parentHWnd = nullptr;
     size_t m_tabId = INVALID_TAB_ID;
     EventRegistrationToken m_historyUpdateForwarderToken = {};
@@ -51,10 +58,13 @@ protected:
     EventRegistrationToken m_navStartingToken = {};
     EventRegistrationToken m_navCompletedToken = {};
     EventRegistrationToken m_certificateErrorToken = {};
+    EventRegistrationToken m_processFailedToken = {};
     EventRegistrationToken m_messageBrokerToken = {};  // Message broker for browser pages loaded in a tab
     Microsoft::WRL::ComPtr<ICoreWebView2WebMessageReceivedEventHandler> m_messageBroker;
 
     HRESULT Init(ICoreWebView2Environment* env, bool shouldBeActive);
     void SetMessageBroker();
     void SetTrackingPrevention();
+    void OnRendererExited();
+    void ReloadAfterCrash();
 };
