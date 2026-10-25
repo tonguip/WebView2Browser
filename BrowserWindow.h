@@ -26,6 +26,7 @@ public:
     HRESULT HandleTabNavStarting(size_t tabId, ICoreWebView2* webview);
     HRESULT HandleTabNavCompleted(size_t tabId, ICoreWebView2* webview, ICoreWebView2NavigationCompletedEventArgs* args);
     HRESULT HandleTabTitleUpdate(size_t tabId, ICoreWebView2* webview);
+    HRESULT HandleTabFaviconUpdate(size_t tabId, ICoreWebView2* webview);
     HRESULT HandleTabSecurityUpdate(size_t tabId, ICoreWebView2* webview);
     HRESULT HandleTabCertificateError(size_t tabId, ICoreWebView2* webview, LPCWSTR uri);
     HRESULT HandleTabNewWindowRequested(size_t tabId, ICoreWebView2NewWindowRequestedEventArgs* args);

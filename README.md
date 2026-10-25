@@ -84,7 +84,7 @@ int BrowserWindow::GetDPIAwareBound(int bound)
 
 ## Browser layout
 
-WebView2Browser has a multi-WebView approach to integrate web content and application UI into a Windows Desktop application. This allows the browser to use standard web technologies (HTML, CSS, JavaScript) to light up the interface but also enables the app to fetch favicons from the web and use IndexedDB for storing favorites and history.
+WebView2Browser has a multi-WebView approach to integrate web content and application UI into a Windows Desktop application. This allows the browser to use standard web technologies (HTML, CSS, JavaScript) to light up the interface but also enables the app to use IndexedDB for storing favorites and history.
 
 The multi-WebView approach uses one WebView environment with two profiles: UI WebViews (controls and options dropdown) use the `BrowserUI` profile, while web content WebViews (one per tab) use the default profile. Each profile keeps its own cookies, cache and storage, so the UI stays isolated from web content, but all WebViews share one browser process, GPU process and network service. (Earlier versions used a second environment for the UI, which started a second set of those processes; the UI's favorites and history move to the new profile on first run.)
 
@@ -116,7 +116,8 @@ ICoreWebView2ControllerOptions | Used with CreateCoreWebView2ControllerWithOptio
 ICoreWebView2 | There are several WebViews in WebView2Browser and most features make use of members in this interface, the table below shows how they're used.
 ICoreWebView2ServerCertificateErrorDetectedEventHandler | Used along with add_ServerCertificateErrorDetected to show pages of a host with a certificate error as not secure. |
 ICoreWebView2DocumentTitleChangedEventHandler | Used along with add_DocumentTitleChanged to show the page's title in its tab and history entry as soon as it has one. |
-ICoreWebView2ExecuteScriptCompletedHandler | Used along with ExecuteScript to get the favicon from the visited page. |
+ICoreWebView2FaviconChangedEventHandler | Used along with add_FaviconChanged to show the page's favicon in the address bar and its history entry. |
+ICoreWebView2GetFaviconCompletedHandler | Used along with GetFavicon to get the favicon's image from the tab, which has loaded it already. |
 ICoreWebView2FocusChangedEventHandler | Used along with add_LostFocus to hide the browser options dropdown when it loses focus.
 ICoreWebView2HistoryChangedEventHandler | Used along with add_HistoryChanged to update the navigation buttons in the browser UI. |
 ICoreWebView2NewWindowRequestedEventArgs | Used with put_NewWindow and GetDeferral to open the window a page asks for in a new tab, and with get_IsUserInitiated to block popups the user didn't ask for. |
@@ -133,7 +134,7 @@ add_SourceChanged | Used to update the address bar.
 add_HistoryChanged | Used to update go back/forward buttons.
 add_NavigationCompleted | Used to display the reload button once a navigation completes.
 add_DocumentTitleChanged | Used with get_DocumentTitle to update the tab's title and history entry each time the page's title changes.
-ExecuteScript | Used to get the favicon of a visited page.
+add_FaviconChanged | Used with get_FaviconUri and GetFavicon to show the page's favicon without loading it again.
 PostWebMessageAsJson | Used to communicate WebViews. All messages use JSON to pass parameters needed.
 add_WebMessageReceived | Used to handle web messages posted to the WebView.
 Stop | Used to cancel a navigation.
@@ -850,6 +851,68 @@ HRESULT BrowserWindow::HandleTabSecurityUpdate(size_t tabId, ICoreWebView2* webv
                 }
             }
             break;
+```
+
+### Showing the favicon
+
+The address bar shows the favicon the tab itself loaded. `FaviconChanged` fires as each new page starts, when it has no favicon yet, and again once the tab has the page's icon (or the one at the site's root), or when a script changes it. `HandleTabFaviconUpdate` gets the image from the tab with `GetFavicon` and posts it to the controls WebView as a data URI, with the icon's address. History and favorites keep the address, as before.
+
+The toolbar used to ask the page for the icon's address once it had loaded, and load the icon itself. In its own profile, with its own cache and connections, that was a second download of every icon and a second connection to every site visited. Over 14 popular sites the toolbar made 14 requests, 75 KB, over 12 new connections, and makes none now. Local test sites got each icon twice and get it once, over 22 to 24 connections instead of 32 to 34. The icon shows a median of 40 to 55 ms after the page loads, where it took 125 to 270 ms. An icon a script sets now shows, and a tab whose icon comes while it's hidden puts it in its history entry. A page left within some 30 ms of loading, before the tab has its icon, keeps the default icon in history; the toolbar used to load it, and 4 or 5 of 90 times put it on the next page's entry.
+
+`GetFavicon` gives the icon at 16 by 16 pixels, also with the display scaled to 200%, and the address bar shows it at that size. The toolbar used to show the site's own icon, often 32 to 64 pixels, scaled down: on a screen at 100% the two look alike, while at 200% the icon is now softer.
+
+```cpp
+HRESULT BrowserWindow::HandleTabFaviconUpdate(size_t tabId, ICoreWebView2* webview)
+{
+    ComPtr<ICoreWebView2_15> webview15;
+    RETURN_IF_FAILED(webview->QueryInterface(IID_PPV_ARGS(&webview15)));
+
+    wil::unique_cotaskmem_string uri;
+    RETURN_IF_FAILED(webview15->get_FaviconUri(&uri));
+    std::wstring faviconUri(uri.get());
+
+    // Without an image the tab shows the default favicon
+    auto postFavicon = [this, tabId, faviconUri](const std::vector<unsigned char>& image) -> HRESULT
+    {
+        // ...
+        jsonObj[L"args"][L"uri"] = web::json::value(faviconUri);
+        if (!image.empty())
+        {
+            jsonObj[L"args"][L"image"] = web::json::value(L"data:image/png;base64," + utility::conversions::to_base64(image));
+        }
+
+        return PostJsonToWebView(jsonObj, m_controlsWebView.Get());
+    };
+
+    // Each new page has none until it gives one, or until WebView2 finds the
+    // one at the site's root. GetFavicon would give WebView2's own default.
+    if (faviconUri.empty())
+    {
+        return postFavicon({});
+    }
+
+    return webview15->GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG, Callback<ICoreWebView2GetFaviconCompletedHandler>(
+        [webview15, faviconUri, postFavicon](HRESULT error, IStream* stream) -> HRESULT
+    {
+        // ...
+        return postFavicon(image);
+    }).Get());
+}
+```
+
+```javascript
+function updateTabFavicon(tabId, uri, image) {
+    let tab = tabs.get(tabId);
+    tab.favicon = image ? uri : 'img/favicon.png';
+    tab.faviconImage = image || 'img/favicon.png';
+
+    if (tabId == activeTabId) {
+        updateNavigationUI(commands.MG_UPDATE_FAVICON);
+    }
+
+    // Update favicon in history item
+    updateTabHistoryItem(tabId);
+}
 ```
 
 ### Populating the history

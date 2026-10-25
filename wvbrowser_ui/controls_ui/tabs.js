@@ -32,6 +32,7 @@ function createNewTab(shouldBeActive, openerTabId) {
         uri: '',
         uriToShow: '',
         favicon: 'img/favicon.png',
+        faviconImage: 'img/favicon.png',
         isFavorite: false,
         isLoading: false,
         canGoBack: false,
@@ -145,49 +146,18 @@ function closeTab(id) {
     window.chrome.webview.postMessage(message);
 }
 
-function updateFaviconURI(tabId, src) {
+// The tab's favicon, as the tab loaded it (see
+// BrowserWindow::HandleTabFaviconUpdate): history and favorites keep its
+// address, and the address bar shows its image. Without an image the page has
+// no favicon, or it didn't load, and the tab has the default one.
+function updateTabFavicon(tabId, uri, image) {
     let tab = tabs.get(tabId);
-    if (tab.favicon != src) {
-        let img = new Image();
+    tab.favicon = image ? uri : 'img/favicon.png';
+    tab.faviconImage = image || 'img/favicon.png';
 
-        // Update favicon element on successful load
-        img.onload = () => {
-            console.log('Favicon loaded');
-            tab.favicon = src;
-
-            if (tabId == activeTabId) {
-                updatedFaviconURIHandler(tabId, tab);
-            }
-        };
-
-        if (src) {
-            // Try load from root on failed load
-            img.onerror = () => {
-                console.log('Cannot load favicon from link, trying with root');
-                updateFaviconURI(tabId, '');
-            };
-        } else {
-            // No link for favicon, try loading from root
-            try {
-                let tabURI = new URL(tab.uri);
-                src = `${tabURI.origin}/favicon.ico`;
-            } catch(e) {
-                console.log(`Could not parse tab ${tabId} URI`);
-            }
-
-            img.onerror = () => {
-                console.log('No favicon in site root. Using default favicon.');
-                tab.favicon = 'img/favicon.png';
-                updatedFaviconURIHandler(tabId, tab);
-            };
-        }
-
-        img.src = src;
+    if (tabId == activeTabId) {
+        updateNavigationUI(commands.MG_UPDATE_FAVICON);
     }
-}
-
-function updatedFaviconURIHandler(tabId, tab) {
-    updateNavigationUI(commands.MG_UPDATE_FAVICON);
 
     // Update favicon in history item
     updateTabHistoryItem(tabId);

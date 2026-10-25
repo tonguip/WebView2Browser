@@ -748,57 +748,70 @@ HRESULT BrowserWindow::HandleTabTitleUpdate(size_t tabId, ICoreWebView2* webview
     return PostJsonToWebView(jsonObj, m_controlsWebView.Get());
 }
 
-HRESULT BrowserWindow::HandleTabNavCompleted(size_t tabId, ICoreWebView2* webview, ICoreWebView2NavigationCompletedEventArgs* args)
+// The favicon as the tab loaded it. The toolbar used to load the icon again from
+// the address the page gave, once the page had loaded: in its own profile, that
+// was a second download of every icon, and a second connection to every site.
+// History and favorites keep the address, and the address bar shows the image.
+HRESULT BrowserWindow::HandleTabFaviconUpdate(size_t tabId, ICoreWebView2* webview)
 {
-    std::wstring getFaviconURI(
-        L"(() => {"
-        // Let the UI use a fallback favicon
-        L"    let faviconURI = '';"
-        L"    let links = document.getElementsByTagName('link');"
-        // Test each link for a favicon
-        L"    Array.from(links).map(element => {"
-        L"        let rel = element.rel;"
-        // Favicon is declared, try to get the href
-        L"        if (rel && (rel == 'shortcut icon' || rel == 'icon')) {"
-        L"            if (!element.href) {"
-        L"                return;"
-        L"            }"
-        // href to icon found, check it's full URI
-        L"            try {"
-        L"                let urlParser = new URL(element.href);"
-        L"                faviconURI = urlParser.href;"
-        L"            } catch(e) {"
-        // Try prepending origin
-        L"                let origin = window.location.origin;"
-        L"                let faviconLocation = `${origin}/${element.href}`;"
-        L"                try {"
-        L"                    urlParser = new URL(faviconLocation);"
-        L"                    faviconURI = urlParser.href;"
-        L"                } catch (e2) {"
-        L"                    return;"
-        L"                }"
-        L"            }"
-        L"        }"
-        L"    });"
-        L"    return faviconURI;"
-        L"})();"
-    );
+    ComPtr<ICoreWebView2_15> webview15;
+    RETURN_IF_FAILED(webview->QueryInterface(IID_PPV_ARGS(&webview15)));
 
-    CheckFailure(webview->ExecuteScript(getFaviconURI.c_str(), Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
-        [this, tabId](HRESULT error, PCWSTR result) -> HRESULT
+    wil::unique_cotaskmem_string uri;
+    RETURN_IF_FAILED(webview15->get_FaviconUri(&uri));
+    std::wstring faviconUri(uri.get());
+
+    // Without an image the tab shows the default favicon
+    auto postFavicon = [this, tabId, faviconUri](const std::vector<unsigned char>& image) -> HRESULT
     {
-        RETURN_IF_FAILED(error);
-
         web::json::value jsonObj = web::json::value::parse(L"{}");
         jsonObj[L"message"] = web::json::value(MG_UPDATE_FAVICON);
         jsonObj[L"args"] = web::json::value::parse(L"{}");
-        jsonObj[L"args"][L"uri"] = web::json::value::parse(result);
+        jsonObj[L"args"][L"uri"] = web::json::value(faviconUri);
         jsonObj[L"args"][L"tabId"] = web::json::value::number(tabId);
+        if (!image.empty())
+        {
+            jsonObj[L"args"][L"image"] = web::json::value(L"data:image/png;base64," + utility::conversions::to_base64(image));
+        }
 
-        CheckFailure(PostJsonToWebView(jsonObj, m_controlsWebView.Get()), L"Can't update favicon.");
-        return S_OK;
-    }).Get()), L"Can't update favicon");
+        return PostJsonToWebView(jsonObj, m_controlsWebView.Get());
+    };
 
+    // Each new page has none until it gives one, or until WebView2 finds the
+    // one at the site's root. GetFavicon would give WebView2's own default.
+    if (faviconUri.empty())
+    {
+        return postFavicon({});
+    }
+
+    return webview15->GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG, Callback<ICoreWebView2GetFaviconCompletedHandler>(
+        [webview15, faviconUri, postFavicon](HRESULT error, IStream* stream) -> HRESULT
+    {
+        RETURN_IF_FAILED(error);
+
+        // The page has another favicon since, which comes next
+        wil::unique_cotaskmem_string uri;
+        RETURN_IF_FAILED(webview15->get_FaviconUri(&uri));
+        if (faviconUri != uri.get())
+        {
+            return S_OK;
+        }
+
+        // No image: the icon didn't load
+        std::vector<unsigned char> image;
+        BYTE buffer[4096];
+        ULONG read = 0;
+        while (stream && SUCCEEDED(stream->Read(buffer, sizeof(buffer), &read)) && read > 0)
+        {
+            image.insert(image.end(), buffer, buffer + read);
+        }
+
+        return postFavicon(image);
+    }).Get());
+}
+
+HRESULT BrowserWindow::HandleTabNavCompleted(size_t tabId, ICoreWebView2* webview, ICoreWebView2NavigationCompletedEventArgs* args)
+{
     web::json::value jsonObj = web::json::value::parse(L"{}");
     jsonObj[L"message"] = web::json::value(MG_NAV_COMPLETED);
     jsonObj[L"args"] = web::json::value::parse(L"{}");

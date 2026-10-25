@@ -85,6 +85,19 @@ HRESULT Tab::Init(ICoreWebView2Environment* env, bool shouldBeActive, NewWindow 
             return S_OK;
         }).Get(), &m_titleChangedToken));
 
+        // The favicon each time the page has another one. Older runtimes
+        // show the default one.
+        ComPtr<ICoreWebView2_15> webview15;
+        if (SUCCEEDED(m_contentWebView.As(&webview15)))
+        {
+            RETURN_IF_FAILED(webview15->add_FaviconChanged(Callback<ICoreWebView2FaviconChangedEventHandler>(
+                [this, browserWindow](ICoreWebView2* webview, IUnknown* args) -> HRESULT
+            {
+                BrowserWindow::CheckFailure(browserWindow->HandleTabFaviconUpdate(m_tabId, webview), L"Can't update favicon.");
+                return S_OK;
+            }).Get(), &m_faviconChangedToken));
+        }
+
         // A certificate error shows the host's pages as not secure, also once
         // the user goes on past the warning. Older runtimes don't say.
         ComPtr<ICoreWebView2_14> webview14;

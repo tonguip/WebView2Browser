@@ -131,7 +131,7 @@ const messageHandler = event => {
             break;
         case commands.MG_UPDATE_FAVICON:
             if (isValidTabId(args.tabId)) {
-                updateFaviconURI(args.tabId, args.uri);
+                updateTabFavicon(args.tabId, args.uri, args.image);
             }
             break;
         case commands.MG_CLOSE_WINDOW:
@@ -295,7 +295,7 @@ function updateFavicon() {
         return;
     }
 
-    faviconElement.src = activeTab.favicon;
+    faviconElement.src = activeTab.faviconImage;
 
 }
 
